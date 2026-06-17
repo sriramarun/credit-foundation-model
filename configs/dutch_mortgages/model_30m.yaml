@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+# Credit-FM 30M — default main candidate (Chinchilla-honest on ~600M synthetic tokens).
+hidden_size: 256
+num_heads: 8
+profile_encoder: {num_layers: 3}
+event_encoder:   {num_layers: 5}
+history_encoder: {num_layers: 6}
+max_events: 24             # 24 monthly cutoffs
+max_seq_length: 512

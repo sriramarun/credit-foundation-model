@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# Downstream task definitions — Dutch mortgages.
+tasks:
+  default_6m:   {label: default_within_k_months, k: 6,  metric: pr_auc}
+  default_3m:   {label: default_within_k_months, k: 3,  metric: pr_auc}
+  prepayment_6m: {label: prepayment_within_k_months, k: 6, metric: roc_auc}
+  cure_3m:      {label: cure_within_k_months, k: 3,  metric: roc_auc}

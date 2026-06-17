@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+# KVT tokenizer config — Dutch mortgages (ESMA Annex 2, 71 columns).
+schema: esma_annex2
+num_buckets: 16            # percentile buckets per continuous field (<=32)
+zero_bucket: true          # reserve a separate bucket for zero values
+categorical_fields: []     # TODO: enumerate from ESMA template
+numeric_fields: []         # TODO
+text_fields: []
+temporal:
+  log_seconds: true        # 8*ln(1+seconds/8)
+  cyclical: [hour, day_of_week, day_of_month]

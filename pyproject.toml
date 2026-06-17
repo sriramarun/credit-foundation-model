@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "credit_fm"
+version = "0.1.0"
+description = "Open-source framework for training credit foundation models"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Algoritmica.ai" },
+  { name = "Sriram Krishnan" },
+]
+dependencies = [
+  "torch>=2.2",
+  "transformers>=4.40",
+  "peft>=0.10",
+  "numpy",
+  "pandas",
+  "pyarrow",
+  "scikit-learn",
+  "xgboost",
+  "lightgbm",
+  "pyyaml",
+  "wandb",
+  "matplotlib",
+  "tqdm",
+]
+
+[project.optional-dependencies]
+app = ["fastapi", "uvicorn"]
+dev = ["pytest", "pytest-cov", "ruff"]
+nemo = ["nemo-toolkit"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

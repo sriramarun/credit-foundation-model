@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
+# Downstream task definitions — invoice financing (TBD with data).
+tasks:
+  default_6m: {label: default_within_k_months, k: 6, metric: pr_auc}

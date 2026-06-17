@@ -1,23 +1,20 @@
-# Core
+torch>=2.2
+transformers>=4.40
+peft>=0.10
 numpy
 pandas
 pyarrow
 scikit-learn
-pyyaml
-
-# Baselines
 xgboost
 lightgbm
-
-# Modeling / training (pin to your CUDA build of torch for the H100 nodes)
-torch
-transformers
-accelerate
-
-# Tracking & utilities
-mlflow
+pyyaml
+wandb
+matplotlib
 tqdm
-
-# Dev
+# app
+fastapi
+uvicorn
+# dev
 pytest
+pytest-cov
 ruff

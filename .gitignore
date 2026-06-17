@@ -1,9 +1,14 @@
-# Data & model artifacts
-data/raw/*
-data/processed/*
-data/decoder_corpus/*
-models/*/checkpoints/*
+# Data & artifacts
+data/
+*.parquet
+models/**/*.bin
+models/**/*.safetensors
+models/**/*.pt
 !**/.gitkeep
+
+# Experiment tracking
+wandb/
+mlruns/
 
 # Python
 __pycache__/
@@ -11,10 +16,9 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
+.pytest_cache/
+.ruff_cache/
 .ipynb_checkpoints/
-
-# Tracking
-mlruns/
 
 # OS / editor
 .DS_Store

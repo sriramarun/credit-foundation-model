@@ -1,90 +1,91 @@
-# Credit Foundation Model
+# Credit Foundation Model Framework
 
-A credit-data-specific foundation model based on the
-[NVIDIA Transaction Foundation Model blueprint](https://github.com/NVIDIA-AI-Blueprints/transaction-foundation-model).
+An **open-source framework (Apache 2.0) for training credit foundation models** on tabular
+credit panel data — plus two reference implementations on different asset classes. Built so
+banks and financial institutions can train their own credit foundation models on their own
+data without building the underlying infrastructure from scratch.
 
-> **Objective:** Build a self-supervised foundation model over credit event sequences and
-> demonstrate measurable lift from credit embeddings versus raw-feature baselines.
+Co-founder engagement between **Algoritmica.ai** and **Sriram Krishnan**, sponsored by
+**NVIDIA** (8× H100), 3-month delivery.
 
-## Project at a glance
+## Approach
 
-| | |
-|---|---|
-| Compute window | 60 days |
-| Hardware | 8× NVIDIA H100 (640 GB VRAM total) |
-| Recommended main model | Credit-TFM-M, 100M–250M params, 4k–8k context |
-| Primary success metric | Lift from self-supervised credit embeddings vs raw-feature baselines |
-| Downstream tasks | Default / delinquency, prepayment, cure, segmentation, anomaly detection |
+Encoder-only (BERT-style) architecture with masked-language-modelling pretraining over
+credit-event sequences, synthesizing two published references:
 
-**Definition of done:** tokenizer, trained checkpoint, embedding pipeline, downstream
-benchmark, leakage audit, and model/data cards.
+- **PRAGMA** (Revolut + NVIDIA, 2026) — primary architectural reference (encoder-only,
+  three-branch, +130% PR-AUC on credit scoring).
+- **NVIDIA Transaction Foundation Model** — reference for the training stack.
 
-The full phased roadmap, experiment matrix, metrics template, risks, and deliverables
-live in [`docs/project_manager_roadmap.xlsx`](docs/project_manager_roadmap.xlsx).
+The framework is schema-agnostic: adapt to a new asset class by writing YAML (tokenizer,
+model, training, downstream tasks), then running the standard scripts.
 
-## Phases (60-day plan)
+## What's in here
 
-| Phase | Days | Focus |
-|------:|------|-------|
-| 0 | 1–2   | Setup and decision log |
-| 1 | 3–8   | Credit event schema + leakage inventory + temporal splits |
-| 2 | 9–14  | Strong tree/logistic baselines + DQ report (go/no-go gate) |
-| 3 | 15–22 | Credit tokenizer v1 + corpora |
-| 4 | 23–34 | Pretraining scale-up (30M → 100M–250M) |
-| 5 | 35–43 | Embedding extraction + downstream eval |
-| 6 | 44–50 | Tokenizer v2 + ablations + leakage audit |
-| 7 | 51–56 | Prototype productization (batch embed + scoring) |
-| 8 | 57–60 | Final validation + handoff (technical report, cards, demo, v2 roadmap) |
+| Component | Location | Description |
+|-----------|----------|-------------|
+| Framework (`credit_fm`) | `src/credit_fm/` | Tokenizer, three-branch model, data, training, inference, evaluation |
+| Dutch mortgages reference | `configs/dutch_mortgages/`, `reference_implementations/dutch_mortgages/` | ESMA Annex 2 synthetic RMBS, 30M checkpoint |
+| Invoice financing reference | `configs/invoice_financing/`, `reference_implementations/invoice_financing/` | Second asset class (data TBD) |
+| Dashboard | `app/` | FastAPI demo over the four pipeline stages |
+
+## Differentiation
+
+1. **Open source** — weights, code, tokenizers, references all Apache 2.0 (PRAGMA is proprietary).
+2. **Regulator-aligned** — Dutch mortgages uses the ESMA Annex 2 template byte-for-byte.
+3. **Sovereign-cloud-deployable** — runs entirely on customer infrastructure, no external APIs.
+
+## Architecture (three-branch encoder)
+
+```
+static fields ─▶ Profile State Encoder (3L) ─┐
+                                              ├─▶ History Encoder (4–6L) ─▶ [USR] embedding
+per-cutoff events ─▶ Event Encoder (4–5L) ────┘
+```
+
+Pretraining: MLM with three masking sources (15% tokens / 10% events / 10% semantic types).
+Downstream: embedding probe (frozen) or LoRA fine-tuning. Default size **30M**
+(Chinchilla-honest on ~600M synthetic tokens).
+
+## Quickstart
+
+```bash
+pip install -e .            # installs the credit_fm package
+# Dutch mortgages reference, end to end:
+bash reference_implementations/dutch_mortgages/train.sh
+bash reference_implementations/dutch_mortgages/evaluate.sh
+```
+
+Walkthrough notebooks: `notebooks/01_data_and_baseline` → `05_downstream_evaluation`.
 
 ## Repository layout
 
-Structured to mirror the [NVIDIA TFM blueprint](https://github.com/NVIDIA-AI-Blueprints/transaction-foundation-model):
-numbered workflow notebooks at the root, a flat `src/` with a modular `tokenizer/`
-package, plus this project's governance `docs/` and `reports/`.
+See [`docs/architecture.md`](docs/architecture.md) for full rationale.
 
 ```
-credit-foundation-model/
-├── 01_dataset_baseline.ipynb            # Phase 1-2: splits + baselines
-├── 02_seq_preproc_tokenization.ipynb    # Phase 3: sequences + tokenizer + corpora
-├── 03_foundation_model_training.ipynb   # Phase 4: pretraining
-├── 04_inference_embedding_extraction.ipynb  # Phase 5: embeddings
-├── 05_downstream_credit_eval.ipynb      # Phase 5: downstream lift vs baselines
-├── configs/            # NeMo AutoModel-style pretraining + tokenizer + experiment configs
-├── assets/             # Diagrams and figures
-├── models/             # Model artifacts; */checkpoints/ gitignored
-├── data/               # raw/ · processed/ · decoder_corpus/  (all gitignored)
-├── docs/               # Schema, decision log, roadmap workbook
-├── reports/            # Baselines, eval, ablations, model/data cards, handoff
-├── scripts/            # CLI entry points (train_decoder_model.py + pipeline scripts)
-├── src/
-│   ├── clm_data.py         # Causal-LM dataset builder
-│   ├── decoder_inference.py # Checkpoint load + embedding extraction
-│   └── tokenizer/          # Modular credit tokenizer (base, pipeline, steps)
-└── tests/
+src/credit_fm/   tokenizer/ models/ data/ training/ inference/ evaluation/ utils/
+configs/         dutch_mortgages/ · invoice_financing/   (YAML per asset class)
+scripts/         prepare_data · train_baseline · train_tokenizer · pretrain · …
+notebooks/       01–05 pipeline walkthroughs
+reference_implementations/   per-asset README, cards, train.sh, evaluate.sh
+models/          pretrained checkpoints (Git LFS)
+app/             FastAPI dashboard
+docs/            architecture · tokenization · training · evaluation · extending · deployment
+tests/           tokenizer · models · data · training · evaluation · e2e
 ```
 
-## Getting started
+## Existing assets used
 
-```bash
-# 1. Create environment
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+- Synthetic Dutch RMBS dataset: [`Algoritmica/green-lion-2024-2025`](https://huggingface.co/datasets/Algoritmica/green-lion-2024-2025)
+- [deeploans synthetic-data-designer](https://github.com/Algoritmica-ai/deeploans/tree/main/synthetic-data-designer)
+- [NVIDIA TFM blueprint](https://github.com/NVIDIA-AI-Blueprints/transaction-foundation-model)
 
-# 2. Validate the 8-GPU environment (Phase 0)
-python scripts/gpu_smoke_test.py
+## References
 
-# 3. Follow the phased roadmap in docs/project_manager_roadmap.xlsx
-```
+- PRAGMA — Ostroukhov et al., 2026 (arXiv:2604.08649)
+- BERT — Devlin et al., 2019 · LoRA — Hu et al., 2021 · Chinchilla — Hoffmann et al., 2022
+- ESMA Annex 2 — Commission Delegated Regulation (EU) 2020/1224
 
-## Key risks (see roadmap `Risks` tab)
+## License
 
-- **Data leakage** from future-state fields → observation-date feature store + field-level
-  leakage inventory + temporal splits.
-- **Weak baselines** make foundation-model lift misleading → strong XGBoost/LightGBM baselines.
-- **GPU time before data quality is proven** → enforce the Phase 2 go/no-go gate before
-  large pretraining.
-
-## Source / reference
-
-- NVIDIA AI Blueprint: Transaction Foundation Model —
-  https://github.com/NVIDIA-AI-Blueprints/transaction-foundation-model
+Apache 2.0 — see [LICENSE](LICENSE).
