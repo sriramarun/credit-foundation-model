@@ -1,0 +1,16 @@
+# Pretraining config (Phase 4). Mirrors NVIDIA pretrain_financial_decoder.yaml.
+# Reference: https://github.com/NVIDIA-AI-Blueprints/transaction-foundation-model
+model:
+  name: Credit-TFM-M
+  params_target: 100M-250M
+  context_length: 4096
+data:
+  corpus_dir: data/processed/corpus
+training:
+  num_gpus: 8
+  precision: bf16
+  global_batch_size: null      # tune for 8x H100
+  max_steps: null
+  checkpoint_dir: checkpoints/
+tracking:
+  experiment: credit-tfm

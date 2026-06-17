@@ -1,0 +1,21 @@
+# Data & model artifacts
+data/raw/*
+data/processed/*
+checkpoints/*
+!**/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.ipynb_checkpoints/
+
+# Tracking
+mlruns/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

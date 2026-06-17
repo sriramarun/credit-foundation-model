@@ -1,0 +1,6 @@
+# Credit tokenizer v1 config (Phase 3). Define against approved credit_event_schema.
+event_field: event_type
+categorical_fields: []        # e.g. [product_type, state, delinquency_bucket]
+temporal_fields: []           # e.g. [months_on_book, time_since_last_payment]
+numeric_buckets: {}           # e.g. {balance: "quantile:32", interest_rate: "quantile:16"}
+max_context: 4096             # 2048 | 4096 | 8192

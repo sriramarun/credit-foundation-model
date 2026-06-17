@@ -1,0 +1,23 @@
+# Core
+numpy
+pandas
+pyarrow
+scikit-learn
+pyyaml
+
+# Baselines
+xgboost
+lightgbm
+
+# Modeling / training (pin to your CUDA build of torch for the H100 nodes)
+torch
+transformers
+accelerate
+
+# Tracking & utilities
+mlflow
+tqdm
+
+# Dev
+pytest
+ruff
