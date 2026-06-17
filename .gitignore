@@ -1,7 +1,8 @@
 # Data & model artifacts
 data/raw/*
 data/processed/*
-checkpoints/*
+data/decoder_corpus/*
+models/*/checkpoints/*
 !**/.gitkeep
 
 # Python

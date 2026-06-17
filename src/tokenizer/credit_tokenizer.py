@@ -1,46 +1,30 @@
-"""Credit tokenizer (Phase 3 deliverable).
+"""Tokenizer interface for decoder-only credit model training and inference.
 
-Converts borrower/loan/observation event sequences into token sequences for the
-decoder foundation model. Token classes: categorical, numeric-bucket, temporal, event.
-
-This is a scaffold — implement against the approved credit_event_schema and the
-tokenizer config in configs/credit_tokenizer.yaml.
+Credit analogue of NVIDIA's FinancialTabularTokenizer. Wraps
+CreditTokenizerPipeline in the API that the CLM dataset and
+train_decoder_model.py expect: encode(), decode(), vocab_size, and
+special-token IDs (<bos>/<eos>/<sep>/<pad>/<unk>).
 """
-from __future__ import annotations
-
-from dataclasses import dataclass, field
-from pathlib import Path
+from .credit_pipeline import CreditTokenizerPipeline
 
 
-@dataclass
-class CreditTokenizerConfig:
-    """Loaded from configs/credit_tokenizer.yaml."""
-    numeric_buckets: dict = field(default_factory=dict)   # field -> bucket edges or "quantile:N"
-    categorical_fields: list[str] = field(default_factory=list)
-    temporal_fields: list[str] = field(default_factory=list)
-    event_field: str = "event_type"
-    max_context: int = 4096
+class CreditTabularTokenizer:
+    SPECIAL_TOKENS = ["<pad>", "<bos>", "<eos>", "<sep>", "<unk>"]
 
-    @classmethod
-    def from_yaml(cls, path: str | Path) -> "CreditTokenizerConfig":
-        import yaml
-        with open(path) as f:
-            return cls(**yaml.safe_load(f))
+    def __init__(self, pipeline: CreditTokenizerPipeline | None = None):
+        self.pipeline = pipeline or CreditTokenizerPipeline()
+        self.token_to_id: dict[str, int] = {}
+        self.id_to_token: dict[int, str] = {}
 
+    def build_vocab(self, df) -> None:
+        raise NotImplementedError("Phase 3: fit pipeline + assign special/field token ids")
 
-class CreditTokenizer:
-    def __init__(self, config: CreditTokenizerConfig):
-        self.config = config
-        self.vocab: dict[str, int] = {}
-
-    def fit(self, sequences) -> "CreditTokenizer":
-        """Build vocabulary from training event sequences."""
-        raise NotImplementedError("Phase 3: build categorical/bucket/temporal/event vocab")
-
-    def encode(self, sequence) -> list[int]:
-        """Encode one event sequence into token ids."""
+    def encode(self, df) -> list[int]:
         raise NotImplementedError("Phase 3")
 
-    def report(self) -> dict:
-        """Token frequency, rare-token, OOV, and sequence-length stats (QA report)."""
-        raise NotImplementedError("Phase 3: tokenizer QA report")
+    def decode(self, ids: list[int]) -> list[str]:
+        raise NotImplementedError("Phase 3")
+
+    @property
+    def vocab_size(self) -> int:
+        return len(self.token_to_id)

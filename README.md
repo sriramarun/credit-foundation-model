@@ -38,22 +38,28 @@ live in [`docs/project_manager_roadmap.xlsx`](docs/project_manager_roadmap.xlsx)
 
 ## Repository layout
 
+Structured to mirror the [NVIDIA TFM blueprint](https://github.com/NVIDIA-AI-Blueprints/transaction-foundation-model):
+numbered workflow notebooks at the root, a flat `src/` with a modular `tokenizer/`
+package, plus this project's governance `docs/` and `reports/`.
+
 ```
 credit-foundation-model/
-├── configs/            # Tokenizer, model, and pretraining configs (YAML)
-├── checkpoints/        # Trained model checkpoints (gitignored contents)
-├── data/
-│   ├── raw/            # Source credit datasets (gitignored)
-│   └── processed/      # Observation-date feature store, corpora (gitignored)
+├── 01_dataset_baseline.ipynb            # Phase 1-2: splits + baselines
+├── 02_seq_preproc_tokenization.ipynb    # Phase 3: sequences + tokenizer + corpora
+├── 03_foundation_model_training.ipynb   # Phase 4: pretraining
+├── 04_inference_embedding_extraction.ipynb  # Phase 5: embeddings
+├── 05_downstream_credit_eval.ipynb      # Phase 5: downstream lift vs baselines
+├── configs/            # NeMo AutoModel-style pretraining + tokenizer + experiment configs
+├── assets/             # Diagrams and figures
+├── models/             # Model artifacts; */checkpoints/ gitignored
+├── data/               # raw/ · processed/ · decoder_corpus/  (all gitignored)
 ├── docs/               # Schema, decision log, roadmap workbook
-├── notebooks/          # Exploration and EDA
 ├── reports/            # Baselines, eval, ablations, model/data cards, handoff
-├── scripts/            # CLI entry points: build corpus, train, extract, score
+├── scripts/            # CLI entry points (train_decoder_model.py + pipeline scripts)
 ├── src/
-│   ├── data/           # Entity schema, splits, feature store
-│   ├── tokenizer/      # Credit tokenizer
-│   ├── training/       # Pretraining loops / configs glue
-│   └── embeddings/     # Embedding extraction + pooling
+│   ├── clm_data.py         # Causal-LM dataset builder
+│   ├── decoder_inference.py # Checkpoint load + embedding extraction
+│   └── tokenizer/          # Modular credit tokenizer (base, pipeline, steps)
 └── tests/
 ```
 
