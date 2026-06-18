@@ -49,6 +49,9 @@ Downstream: embedding probe (frozen) or LoRA fine-tuning. Default size **30M**
 
 ## Quickstart
 
+On an H100 / NGC PyTorch container, see [`docs/container_setup.md`](docs/container_setup.md)
+for a restart-proof bring-up (or run `bash scripts/setup_container.sh`). Otherwise:
+
 ```bash
 pip install -e .            # installs the credit_fm package
 # Dutch mortgages reference, end to end:
