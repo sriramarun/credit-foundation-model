@@ -102,7 +102,22 @@ python -c "import wandb; print('wandb', wandb.__version__)"
 ```
 `WANDB_PROJECT=credit-foundation-model` is already set via compose.
 
-### 5. Confirm the scaffold wiring
+### 5. Git: identity + credentials (push-ready from the container)
+
+The container is the primary dev box — you edit and push from here. Persist git identity and
+credentials under `/workspace` so they survive restarts/recreates:
+```bash
+git config --global user.name  "Your Name"
+git config --global user.email "you@example.com"
+# store the PAT under the volume (NOT the ephemeral home dir):
+git config --global credential.helper 'store --file=/workspace/.git-credentials'
+git config --global --add safe.directory /workspace/credit-foundation-model
+# first push prompts once for username + PAT, then it's remembered
+```
+`/workspace/.git-credentials` holds a token — treat it as a secret; it lives outside the repo
+so it won't be committed.
+
+### 6. Confirm the scaffold wiring
 ```bash
 cd /workspace/credit-foundation-model
 python -c "import credit_fm; print('credit_fm', credit_fm.__version__)"
@@ -110,7 +125,7 @@ ruff check .
 pytest -q        # stubs are skip-marked today; confirms collection + CI parity
 ```
 
-### 6. Day 2 — pull the dataset + inspect the schema
+### 7. Day 2 — pull the dataset + inspect the schema
 ```bash
 pip install -U huggingface_hub datasets
 huggingface-cli download Algoritmica/green-lion-2024-2025 \
@@ -128,8 +143,30 @@ categorical/numeric/text/temporal) that fills `configs/dutch_mortgages/tokenizer
 
 ## Quick start (after first setup)
 
-A helper script automates steps 3–5:
+A helper script automates steps 3–6 (venv, install, auto-activation, secrets, git):
 ```bash
-bash /workspace/credit-foundation-model/scripts/setup_container.sh
+GIT_USER_NAME="Your Name" GIT_USER_EMAIL="you@example.com" \
+  bash /workspace/credit-foundation-model/scripts/setup_container.sh
 ```
-It is idempotent — safe to re-run after a restart or recreate.
+It is idempotent — safe to re-run after a restart or recreate. (Identity env vars are optional
+if you already ran `git config --global user.name/.email`.)
+
+## Dev workflow
+
+The container is the primary dev environment: edit and run here (e.g. VS Code / Cursor
+Remote-SSH over Tailscale), since all GPU work runs on it. GitHub is the single source of
+truth; git has no file locking — work on **branches** and sync through GitHub. Always
+`git pull` before editing.
+
+```bash
+cd /workspace/credit-foundation-model
+git checkout main && git pull              # latest
+git checkout -b feat/<short-topic>         # branch per task
+# ... edit + run on GPUs ...
+ruff check . && pytest -q                  # local gate (mirrors CI)
+git add -A && git commit -m "scope: what changed"
+git push -u origin feat/<short-topic>      # open a PR → CI must pass → merge
+```
+
+Never commit data, checkpoints, secrets, or `.venv` (all gitignored; weights via Git LFS).
+See [`../CONTRIBUTING.md`](../CONTRIBUTING.md) for the full workflow and rules.
