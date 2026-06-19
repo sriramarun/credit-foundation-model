@@ -1,6 +1,15 @@
-# Data & artifacts
-data/
+# Data — keep the folder scaffold, ignore the actual data files
+data/*
+!data/raw/
+!data/processed/
+!data/README.md
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
 *.parquet
+
+# Model weights (keep dir scaffold, ignore weights)
 models/**/*.bin
 models/**/*.safetensors
 models/**/*.pt
