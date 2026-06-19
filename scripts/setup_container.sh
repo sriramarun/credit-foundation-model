@@ -21,15 +21,21 @@ echo "==> 1. GPU / torch check (image build)"
 python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), 'gpus', torch.cuda.device_count())"
 
 echo "==> 2. Create venv (inherits image's CUDA torch via --system-site-packages)"
-if [ ! -d "$VENV" ]; then
-  python -m venv "$VENV" --system-site-packages
+if [ ! -f "$VENV/bin/activate" ]; then
+  [ -d "$VENV" ] && { echo "    removing incomplete venv at $VENV"; rm -rf "$VENV"; }
+  python -m venv "$VENV" --system-site-packages || {
+    echo "ERROR: 'python -m venv' failed — install it (e.g. apt-get install -y python3-venv) and retry." >&2
+    exit 1; }
   echo "    created $VENV"
 else
   echo "    $VENV already exists — reusing"
 fi
+if [ ! -f "$VENV/bin/activate" ]; then
+  echo "ERROR: $VENV/bin/activate missing after venv creation." >&2
+  exit 1
+fi
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
-python -m pip install --upgrade pip >/dev/null
 
 echo "==> 3. Install credit_fm (editable, dev extras; do not reinstall torch)"
 pip install -e "${REPO}[dev]" --no-build-isolation
