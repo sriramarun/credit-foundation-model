@@ -21,21 +21,31 @@ echo "==> 1. GPU / torch check (image build)"
 python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), 'gpus', torch.cuda.device_count())"
 
 echo "==> 2. Create venv (inherits image's CUDA torch via --system-site-packages)"
+ensure_venv_pkg() {
+  # NGC/Ubuntu images often ship Python without ensurepip; install the matching venv pkg.
+  local pyver; pyver="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+  echo "    installing python${pyver}-venv (ensurepip missing)..."
+  apt-get update -qq && apt-get install -y -qq "python${pyver}-venv" python3-venv
+}
 if [ ! -f "$VENV/bin/activate" ]; then
   [ -d "$VENV" ] && { echo "    removing incomplete venv at $VENV"; rm -rf "$VENV"; }
-  python -m venv "$VENV" --system-site-packages || {
-    echo "ERROR: 'python -m venv' failed — install it (e.g. apt-get install -y python3-venv) and retry." >&2
-    exit 1; }
+  if ! python -m venv "$VENV" --system-site-packages 2>/tmp/venv.err; then
+    if grep -q ensurepip /tmp/venv.err; then
+      ensure_venv_pkg
+      rm -rf "$VENV"
+      python -m venv "$VENV" --system-site-packages
+    else
+      cat /tmp/venv.err >&2
+      echo "ERROR: 'python -m venv' failed." >&2; exit 1
+    fi
+  fi
   echo "    created $VENV"
 else
   echo "    $VENV already exists — reusing"
 fi
 if [ ! -f "$VENV/bin/activate" ]; then
-  echo "ERROR: $VENV/bin/activate missing after venv creation." >&2
-  exit 1
+  echo "ERROR: $VENV/bin/activate missing after venv creation." >&2; exit 1
 fi
-# shellcheck disable=SC1091
-source "$VENV/bin/activate"
 
 echo "==> 3. Install credit_fm (editable, dev extras; do not reinstall torch)"
 pip install -e "${REPO}[dev]" --no-build-isolation
