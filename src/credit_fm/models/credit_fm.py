@@ -10,7 +10,6 @@ import torch.nn as nn
 from .profile_encoder import ProfileStateEncoder
 from .event_encoder import EventEncoder
 from .history_encoder import HistoryEncoder
-from .mlm_head import MLMHead
 
 
 class CreditFoundationModel(nn.Module):
