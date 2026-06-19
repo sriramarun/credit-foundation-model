@@ -87,20 +87,17 @@ For recreate-proofing, also add the same guarded line to the compose `command` b
 
 ### 4. Secrets (keep out of git; survive via the volume)
 
-`wandb login` / `~/.netrc` is wiped on recreate. Store secrets under `/workspace` and source
-them, or set them in the compose `environment`. **Never commit secrets.**
-
-```bash
 cat > /workspace/secrets.env <<'EOF'
 export WANDB_API_KEY=...
+export WANDB_PROJECT=credit-foundation-model
 export HF_TOKEN=...
+export HF_HOME=/workspace/.hf_cache      # persist the HF download cache on the volume
 EOF
+chmod 600 /workspace/secrets.env
 grep -q '/workspace/secrets.env' ~/.bashrc || \
   echo 'source /workspace/secrets.env' >> ~/.bashrc
 source /workspace/secrets.env
-python -c "import wandb; print('wandb', wandb.__version__)"
-```
-`WANDB_PROJECT=credit-foundation-model` is already set via compose.
+wandb login --verify
 
 ### 5. Git: identity + credentials (push-ready from the container)
 
@@ -126,20 +123,24 @@ pytest -q        # stubs are skip-marked today; confirms collection + CI parity
 ```
 
 ### 7. Day 2 — pull the dataset + inspect the schema
-```bash
-pip install -U huggingface_hub datasets
-huggingface-cli download Algoritmica/green-lion-2024-2025 \
-  --repo-type dataset --local-dir /workspace/credit-foundation-model/data/raw
+
+# single-file dataset → download straight into data/raw (repo-id + filename, not a URL):
+cd /workspace/credit-foundation-model
 python - <<'PY'
-import pandas as pd, glob
-f = sorted(glob.glob('data/raw/**/*.parquet', recursive=True))[0]
-df = pd.read_parquet(f)
+import os
+from huggingface_hub import hf_hub_download
+p = hf_hub_download("Algoritmica/green-lion-2024-2025",
+                    "Overall_2024_2025_all_months.parquet",
+                    repo_type="dataset", local_dir="data/raw",
+                    token=os.environ.get("HF_TOKEN"))
+print("downloaded to:", p)
+PY
+python - <<'PY'
+import pandas as pd
+df = pd.read_parquet('data/raw/Overall_2024_2025_all_months.parquet')
 print('rows:', len(df), 'cols:', len(df.columns))
 print(df.dtypes)
 PY
-```
-The column dump feeds the 71-field ESMA Annex 2 classification (static/dynamic,
-categorical/numeric/text/temporal) that fills `configs/dutch_mortgages/tokenizer.yaml`.
 
 ## Quick start (after first setup)
 
@@ -170,3 +171,6 @@ git push -u origin feat/<short-topic>      # open a PR → CI must pass → merg
 
 Never commit data, checkpoints, secrets, or `.venv` (all gitignored; weights via Git LFS).
 See [`../CONTRIBUTING.md`](../CONTRIBUTING.md) for the full workflow and rules.
+Secrets (`WANDB_API_KEY`, `HF_TOKEN`, `HF_HOME`) live in `/workspace/secrets.env` — never
+committed. Datasets download into the gitignored `data/raw/`; nothing under `data/` (except
+`.gitkeep` and this README) is tracked.
