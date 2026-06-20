@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Algoritmica.ai and contributors.
+# Copyright (c) 2026 finevals.ai and contributors.
 """Pretrain the credit foundation model (MLM). --backend hf|nemo.
 """
 

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Algoritmica.ai and contributors.
+# Copyright (c) 2026 finevals.ai and contributors.
 """MLM pretraining head. For each masked position concatenates the Event-Encoder
 output (local), History-Encoder output at the [EVT] position (cross-event), and
 History-Encoder [USR] output (loan-level), then projects to vocab size.

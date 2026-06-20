@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Algoritmica.ai and contributors.
+# Copyright (c) 2026 finevals.ai and contributors.
 """Three-source MLM masking: 15% individual tokens + 10% whole events + 10% semantic
 types. A fraction of masked positions become [UNK] as input dropout.
 """

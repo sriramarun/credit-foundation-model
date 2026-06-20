@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Algoritmica.ai and contributors.
+# Copyright (c) 2026 finevals.ai and contributors.
 """LoRA fine-tuning wrapper (peft). Default rank=8, alpha=8 on QKV + MLP projections.
 """
 

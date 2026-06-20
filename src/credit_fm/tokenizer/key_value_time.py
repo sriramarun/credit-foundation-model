@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Algoritmica.ai and contributors.
+# Copyright (c) 2026 finevals.ai and contributors.
 """Main key-value-time (KVT) tokenizer.
 
 Decomposes each field into a semantic-type (key) token, value token(s), and a

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Algoritmica.ai and contributors.
+# Copyright (c) 2026 finevals.ai and contributors.
 """Split a raw credit panel into loan-stratified temporal train/val/test parquets.
 
 Writes ``data/processed/{train,val,test}.parquet`` (the whole 24-cutoff history of a loan
