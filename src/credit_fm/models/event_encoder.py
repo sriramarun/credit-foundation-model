@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Algoritmica.ai and contributors.
+# Copyright (c) 2026 finevals.ai and contributors.
 """Event Encoder (4-5 layers default). Processes each cutoff's dynamic fields
 independently; each event's [EVT] token output is its embedding. Calendar features
 are added element-wise to the [EVT] embedding.

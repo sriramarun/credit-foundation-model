@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Algoritmica.ai and contributors.
+# Copyright (c) 2026 finevals.ai and contributors.
 """XGBoost/LightGBM baselines over engineered panel features (static + dynamic +
 3m/12m lags), evaluated on the same test split as the foundation model.
 """

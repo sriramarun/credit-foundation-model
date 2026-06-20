@@ -5,7 +5,7 @@ credit panel data — plus two reference implementations on different asset clas
 banks and financial institutions can train their own credit foundation models on their own
 data without building the underlying infrastructure from scratch.
 
-Co-founder engagement between **Algoritmica.ai** and **Sriram Krishnan**, sponsored by
+Co-founder engagement between **finevals.ai** and **Sriram Krishnan**, sponsored by
 **NVIDIA** (8× H100), 3-month delivery.
 
 ## Approach

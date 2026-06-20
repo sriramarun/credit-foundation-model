@@ -3,7 +3,7 @@ title: Credit Foundation Model Framework
 message: "If you use this framework, please cite it."
 type: software
 authors:
-  - name: "Algoritmica.ai"
+  - name: "finevals.ai"
   - family-names: Krishnan
     given-names: Sriram
 license: Apache-2.0

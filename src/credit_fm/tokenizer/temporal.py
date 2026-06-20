@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Algoritmica.ai and contributors.
+# Copyright (c) 2026 finevals.ai and contributors.
 """Temporal encoding: log-seconds since last event, 8*ln(1+seconds/8), plus cyclical
 calendar features (hour/day-of-week/day-of-month) as (sin, cos) pairs.
 """

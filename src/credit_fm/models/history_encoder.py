@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Algoritmica.ai and contributors.
+# Copyright (c) 2026 finevals.ai and contributors.
 """History Encoder (4-6 layers default). Contextualizes [USR] + [EVT_1..EVT_n] with
 time-to-last-event (RoPE). The [USR] output (z_h[0]) is the per-loan embedding.
 """

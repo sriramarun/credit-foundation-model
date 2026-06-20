@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Algoritmica.ai and contributors.
+# Copyright (c) 2026 finevals.ai and contributors.
 """Full pipeline on 100 synthetic loans, 10 steps, < 60s, non-NaN loss."""
 
 import pytest

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Algoritmica.ai and contributors.
+# Copyright (c) 2026 finevals.ai and contributors.
 """Profile State Encoder (3 layers default). Processes static fields plus life-long
 events with RoPE timestamps; the [USR] position is the aggregated profile embedding.
 """

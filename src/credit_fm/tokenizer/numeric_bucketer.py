@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Algoritmica.ai and contributors.
+# Copyright (c) 2026 finevals.ai and contributors.
 """Percentile bucketing for continuous fields. Reserves a separate bucket for zero;
 bin edges are fit on training data only (never leak from test).
 """

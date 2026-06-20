@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Algoritmica.ai and contributors.
+# Copyright (c) 2026 finevals.ai and contributors.
 """Batch collation with sequence packing. Loans with similar event counts are batched
 to minimize padding; flash-attn varlen prevents attention across loan boundaries.
 """

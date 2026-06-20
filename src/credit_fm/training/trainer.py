@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Algoritmica.ai and contributors.
+# Copyright (c) 2026 finevals.ai and contributors.
 """Main training loop. Default backend HuggingFace Trainer; NeMo AutoModel adapter
 optional. Hyperparameters from training.yaml.
 """

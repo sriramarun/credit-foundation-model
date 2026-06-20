@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Algoritmica.ai and contributors.
+# Copyright (c) 2026 finevals.ai and contributors.
 """FastAPI dashboard entry. Surfaces the four pipeline stages with a working demo
 on the Dutch mortgages reference. Lifts orchestration UI from the existing skeleton.
 """

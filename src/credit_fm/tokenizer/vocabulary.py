@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Algoritmica.ai and contributors.
+# Copyright (c) 2026 finevals.ai and contributors.
 """Unified vocabulary across keys, values, and special tokens. JSON (de)serialization
 and stats reporting (token frequency, sequence-length distribution, OOV rate).
 """
