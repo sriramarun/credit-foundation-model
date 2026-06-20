@@ -11,3 +11,9 @@ coordinate.
 
 Sequence layout: `[BOS]` + origination block + per-cutoff event blocks
 (`[EVT_START]`…`[EVT_END]`) + `[EOS]`.
+
+## Vocabulary fitting (leakage rule)
+
+The vocabulary and all numeric bin edges are fit on **`data/processed/train.parquet` only**
+(see Decision Log DL-008). Build the split first (`scripts/prepare_data.py`), then fit the
+tokenizer on `train` — fitting on val/test/full leaks distribution into the tokenizer.
