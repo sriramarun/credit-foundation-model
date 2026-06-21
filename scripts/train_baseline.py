@@ -87,6 +87,11 @@ def segment_validation(obs, cat_clean, num_clean, cfg):
     gated = {s: o[o[cfg["gate_col"]].isin(cfg["gate_values"])].dropna(subset=[seg])
              for s, o in obs.items()}
     tr, va, te = gated["train"], gated["val"], gated["test"]
+    names = cfg.get("segment_names") or {}
+
+    def lbl(s):
+        return f"{int(s)} ({names[int(s)]})" if int(s) in names else str(int(s))
+
     g = te.groupby(seg)["y"].agg(["count", "mean"])
     spread = g["mean"].max() / max(g["mean"].min(), 1e-9)
 
@@ -122,13 +127,13 @@ def segment_validation(obs, cat_clean, num_clean, cfg):
     print("=" * 64)
     print("(A) segment-conditional default rate (test):")
     for s, r in g.iterrows():
-        print(f"    segment {s}: {int(r['count']):>6,} loans  {r['mean']*100:5.2f}%")
+        print(f"    {lbl(s)}: {int(r['count']):>6,} loans  {r['mean']*100:5.2f}%")
     print(f"    spread: {spread:.0f}x")
     print(f"(B) oracle-{seg} lift: ROC {roc0:.3f}->{roc1:.3f} (+{roc1-roc0:.3f}); "
           f"PR-AUC {pr0:.3f}->{pr1:.3f} (+{(pr1-pr0)/max(pr0,1e-9)*100:.0f}%)")
     print(f"(C) recover {seg}: acc {acc*100:.1f}% vs majority {maj*100:.1f}% | per-segment recall:")
     for s, r in zip(segs, rec):
-        print(f"    segment {int(s)}: recall {r*100:.1f}% ({int(sup[s]):,} loans)")
+        print(f"    {lbl(s)}: recall {r*100:.1f}% ({int(sup[s]):,} loans)")
 
     return [
         "", f"## Architectural validation — the hidden `{seg}` ceiling", "",
@@ -137,7 +142,7 @@ def segment_validation(obs, cat_clean, num_clean, cfg):
         "inaccessible to tabular models. On the Gate-G1 cohort:", "",
         "**(A)** the hidden segment is a large source of default risk:", "",
         "| Segment | loans (test) | default rate |", "|---|--:|--:|",
-        *[f"| {s} | {int(r['count']):,} | {r['mean']*100:.2f}% |" for s, r in g.iterrows()],
+        *[f"| {lbl(s)} | {int(r['count']):,} | {r['mean']*100:.2f}% |" for s, r in g.iterrows()],
         f"| **spread** | | **{spread:.0f}x** |", "",
         "**(B)** if a model could *see* the segment, accuracy jumps (oracle -- diagnostic only):", "",
         "| | ROC-AUC | PR-AUC |", "|---|--:|--:|",
@@ -148,13 +153,14 @@ def segment_validation(obs, cat_clean, num_clean, cfg):
         f"accuracy vs {maj*100:.0f}% from always guessing the majority. Per-segment recall shows "
         "it leans on the majority class and misses the rest:", "",
         "| Segment | loans (test) | recall |", "|---|--:|--:|",
-        *[f"| {int(s)} | {int(sup[s]):,} | {r*100:.1f}% |" for s, r in zip(segs, rec)],
+        *[f"| {lbl(s)} | {int(sup[s]):,} | {r*100:.1f}% |" for s, r in zip(segs, rec)],
         "",
         "**Conclusion.** The segment is a real, large source of default risk (A) that tabular "
         "models can only weakly recover (C); a model that could fully see it would nearly double "
         "PR-AUC (B). The foundation model reads each loan's behavioural *sequence* to recover that "
         "latent -- that headroom above the baseline is the project's thesis, now quantified.",
     ]
+
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
@@ -171,8 +177,12 @@ def main() -> None:
     fwd = forward_cutoffs(d / "train.parquet", tc, cfg["obs_date"], int(cfg["horizon_months"]))
     print(f"obs {cfg['obs_date']} -> forward {fwd[0]}..{fwd[-1]} ({len(fwd)} cutoffs)")
     obs = {s: load_obs(d / f"{s}.parquet", cfg, fwd) for s in ("train", "val", "test")}
+    cohort = {}
     for s, o in obs.items():
-        print(f"  {s}: {len(o):,} loans, default rate {o.y.mean()*100:.2f}%")
+        og = o[o[cfg["gate_col"]].isin(cfg["gate_values"])]
+        cohort[s] = (len(o), len(og), o.y.mean() * 100, og.y.mean() * 100)
+        print(f"  {s}: {len(o):,} loans (gated {len(og):,}), "
+              f"default {cohort[s][2]:.2f}% / gated {cohort[s][3]:.2f}%")
 
     non_feat = {idc, tc, "y"} | set(cfg["exclude"])
     leak = set(cfg["leakage"])
@@ -233,6 +243,13 @@ def main() -> None:
             f"{{{gate_vals}}}) -> predict *new* events.",
             f"- **Feature sets:** *full* = {n_full}; *clean* = {n_clean} (drops the "
             f"{len(cfg['leakage'])} leakage columns below).",
+            "", "**Population** (loans observed at the date):", "",
+            "| Split | observed | gated (Gate G1) | default % | gated default % |",
+            "|---|--:|--:|--:|--:|",
+            *[f"| {s} | {cohort[s][0]:,} | {cohort[s][1]:,} | {cohort[s][2]:.2f}% | "
+              f"{cohort[s][3]:.2f}% |" for s in ("train", "val", "test")],
+            f"| **total** | **{sum(cohort[s][0] for s in cohort):,}** | "
+            f"**{sum(cohort[s][1] for s in cohort):,}** | | |",
             "", "## Results (test split)", "",
             "| Config | ROC-AUC | PR-AUC | pos% |", "|---|--:|--:|--:|",
         ]
