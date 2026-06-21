@@ -32,3 +32,7 @@ leakage:                           # contemporaneous-state features (cheat for d
   - forbearance_flag
   - restructuring_flag
 segment_col: _segment              # hidden latent in loan_book (eval-only ceiling validation)
+segment_names:                     # human labels for the segment latent (report only)
+  0: stable
+  1: baseline
+  2: fragile

@@ -9,6 +9,15 @@ Config `configs/dutch_mortgages/baseline.yaml` · split `data/processed` (loan-s
 - **Gate** keeps only currently-performing loans (`arrears_bucket` in {Performing, 1-29 DPD, 30-59 DPD, 60-89 DPD}) -> predict *new* events.
 - **Feature sets:** *full* = 58; *clean* = 50 (drops the 8 leakage columns below).
 
+**Population** (loans observed at the date):
+
+| Split | observed | gated (Gate G1) | default % | gated default % |
+|---|--:|--:|--:|--:|
+| train | 378,530 | 366,974 | 3.95% | 1.67% |
+| val | 47,371 | 45,887 | 3.98% | 1.66% |
+| test | 47,288 | 45,858 | 4.00% | 1.71% |
+| **total** | **473,189** | **458,719** | | |
+
 ## Results (test split)
 
 | Config | ROC-AUC | PR-AUC | pos% |
@@ -38,9 +47,9 @@ The generator assigns each loan a hidden fragility latent `_segment` (in `loan_b
 
 | Segment | loans (test) | default rate |
 |---|--:|--:|
-| 0 | 28,768 | 0.28% |
-| 1 | 11,411 | 1.37% |
-| 2 | 5,679 | 9.60% |
+| 0 (stable) | 28,768 | 0.28% |
+| 1 (baseline) | 11,411 | 1.37% |
+| 2 (fragile) | 5,679 | 9.60% |
 | **spread** | | **34x** |
 
 **(B)** if a model could *see* the segment, accuracy jumps (oracle -- diagnostic only):
@@ -55,9 +64,9 @@ The generator assigns each loan a hidden fragility latent `_segment` (in `loan_b
 
 | Segment | loans (test) | recall |
 |---|--:|--:|
-| 0 | 28,768 | 95.2% |
-| 1 | 11,411 | 2.2% |
-| 2 | 5,679 | 39.7% |
+| 0 (stable) | 28,768 | 95.2% |
+| 1 (baseline) | 11,411 | 2.2% |
+| 2 (fragile) | 5,679 | 39.7% |
 
 **Conclusion.** The segment is a real, large source of default risk (A) that tabular models can only weakly recover (C); a model that could fully see it would nearly double PR-AUC (B). The foundation model reads each loan's behavioural *sequence* to recover that latent -- that headroom above the baseline is the project's thesis, now quantified.
 
