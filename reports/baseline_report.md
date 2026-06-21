@@ -32,25 +32,33 @@ Config `configs/dutch_mortgages/baseline.yaml` · split `data/processed` (loan-s
 
 ## Architectural validation — the hidden `_segment` ceiling
 
-The generator assigns each loan a hidden fragility latent `_segment` (in `loan_book`, not the panel — evaluation-only, never a feature). It drives default but is invisible to tabular models. On the Gate-G1 cohort:
+The generator assigns each loan a hidden fragility latent `_segment` (in `loan_book`, not the panel -- evaluation-only, never a feature). It drives default but is largely inaccessible to tabular models. On the Gate-G1 cohort:
 
-| (A) Segment | loans (test) | default rate |
+**(A)** the hidden segment is a large source of default risk:
+
+| Segment | loans (test) | default rate |
 |---|--:|--:|
 | 0 | 28,768 | 0.28% |
 | 1 | 11,411 | 1.37% |
 | 2 | 5,679 | 9.60% |
-| **spread** | | **34×** |
+| **spread** | | **34x** |
 
-**(B) Oracle-`_segment` lift** — if the model could see the latent:
+**(B)** if a model could *see* the segment, accuracy jumps (oracle -- diagnostic only):
 
 | | ROC-AUC | PR-AUC |
 |---|--:|--:|
 | Gate G1 (observables only) | 0.739 | 0.046 |
-| + oracle `_segment` (diagnostic) | 0.844 | 0.084 |
+| + oracle `_segment` | 0.844 | 0.084 |
 | **headroom** | **+0.105** | **+82%** |
 
-**(C) Can XGBoost recover `_segment`?** accuracy 65.2% vs 62.7% majority-class (macro-F1 0.42) — **essentially no.** The signal exists (B) but tabular observables can't reach it.
+**(C)** but a tabular model *can't* recover the segment -- overall 65% accuracy vs 63% from always guessing the majority. Per-segment recall shows it leans on the majority class and misses the rest:
 
-**Conclusion.** A real, large source of default risk (A) is invisible to point-in-time tabular models (C); recovering it would nearly double PR-AUC (B). The foundation model reads each loan's behavioural *sequence* to recover that latent — that headroom above the baseline is the project's thesis, now quantified.
+| Segment | loans (test) | recall |
+|---|--:|--:|
+| 0 | 28,768 | 95.2% |
+| 1 | 11,411 | 2.2% |
+| 2 | 5,679 | 39.7% |
+
+**Conclusion.** The segment is a real, large source of default risk (A) that tabular models can only weakly recover (C); a model that could fully see it would nearly double PR-AUC (B). The foundation model reads each loan's behavioural *sequence* to recover that latent -- that headroom above the baseline is the project's thesis, now quantified.
 
 Reproduce: `python scripts/train_baseline.py --config configs/dutch_mortgages/baseline.yaml --data-dir data/processed --book data/raw/loan_book.parquet --report reports/baseline_report.md`
