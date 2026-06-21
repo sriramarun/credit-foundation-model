@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 import yaml
-from sklearn.metrics import (accuracy_score, average_precision_score, f1_score, roc_auc_score)
+from sklearn.metrics import (accuracy_score, average_precision_score, recall_score, roc_auc_score)
 
 
 def forward_cutoffs(path: Path, time_col: str, obs: str, horizon: int) -> list[str]:
@@ -102,48 +102,59 @@ def segment_validation(obs, cat_clean, num_clean, cfg):
     roc0, pr0 = fit_eval([])
     roc1, pr1 = fit_eval([seg])
 
+    # (C) can a tabular model recover the segment from observables?
     Xtr, cm = encode(tr, cat_clean, num_clean)
     Xte, _ = encode(te, cat_clean, num_clean, cm)
     mc = xgb.XGBClassifier(n_estimators=200, max_depth=5, learning_rate=0.1, n_jobs=-1,
                            tree_method="hist")
     mc.fit(Xtr, tr[seg].astype(int))
     yte = te[seg].astype(int)
-    acc = accuracy_score(yte, mc.predict(Xte))
+    pred = mc.predict(Xte)
+    acc = accuracy_score(yte, pred)
     maj = yte.value_counts(normalize=True).max()
-    mf1 = f1_score(yte, mc.predict(Xte), average="macro")
+    segs = sorted(yte.unique())
+    rec = recall_score(yte, pred, labels=segs, average=None, zero_division=0)
+    sup = yte.value_counts()
 
-    print("\n" + "=" * 64 + f"\nCEILING VALIDATION (hidden {seg}, gated cohort)\n" + "=" * 64)
+    print()
+    print("=" * 64)
+    print(f"CEILING VALIDATION (hidden {seg}, gated cohort)")
+    print("=" * 64)
     print("(A) segment-conditional default rate (test):")
     for s, r in g.iterrows():
         print(f"    segment {s}: {int(r['count']):>6,} loans  {r['mean']*100:5.2f}%")
     print(f"    spread: {spread:.0f}x")
     print(f"(B) oracle-{seg} lift: ROC {roc0:.3f}->{roc1:.3f} (+{roc1-roc0:.3f}); "
           f"PR-AUC {pr0:.3f}->{pr1:.3f} (+{(pr1-pr0)/max(pr0,1e-9)*100:.0f}%)")
-    print(f"(C) {seg} recovery from observables: acc {acc*100:.1f}% vs majority {maj*100:.1f}% "
-          f"(macro-F1 {mf1:.3f}) -> essentially hidden")
+    print(f"(C) recover {seg}: acc {acc*100:.1f}% vs majority {maj*100:.1f}% | per-segment recall:")
+    for s, r in zip(segs, rec):
+        print(f"    segment {int(s)}: recall {r*100:.1f}% ({int(sup[s]):,} loans)")
 
     return [
         "", f"## Architectural validation — the hidden `{seg}` ceiling", "",
         f"The generator assigns each loan a hidden fragility latent `{seg}` (in `loan_book`, not "
-        "the panel — evaluation-only, never a feature). It drives default but is invisible to "
-        "tabular models. On the Gate-G1 cohort:", "",
-        "| (A) Segment | loans (test) | default rate |", "|---|--:|--:|",
+        "the panel -- evaluation-only, never a feature). It drives default but is largely "
+        "inaccessible to tabular models. On the Gate-G1 cohort:", "",
+        "**(A)** the hidden segment is a large source of default risk:", "",
+        "| Segment | loans (test) | default rate |", "|---|--:|--:|",
         *[f"| {s} | {int(r['count']):,} | {r['mean']*100:.2f}% |" for s, r in g.iterrows()],
-        f"| **spread** | | **{spread:.0f}×** |", "",
-        f"**(B) Oracle-`{seg}` lift** — if the model could see the latent:", "",
+        f"| **spread** | | **{spread:.0f}x** |", "",
+        "**(B)** if a model could *see* the segment, accuracy jumps (oracle -- diagnostic only):", "",
         "| | ROC-AUC | PR-AUC |", "|---|--:|--:|",
         f"| Gate G1 (observables only) | {roc0:.3f} | {pr0:.3f} |",
-        f"| + oracle `{seg}` (diagnostic) | {roc1:.3f} | {pr1:.3f} |",
+        f"| + oracle `{seg}` | {roc1:.3f} | {pr1:.3f} |",
         f"| **headroom** | **+{roc1-roc0:.3f}** | **+{(pr1-pr0)/max(pr0,1e-9)*100:.0f}%** |", "",
-        f"**(C) Can XGBoost recover `{seg}`?** accuracy {acc*100:.1f}% vs {maj*100:.1f}% "
-        f"majority-class (macro-F1 {mf1:.2f}) — **essentially no.** The signal exists (B) but "
-        "tabular observables can't reach it.", "",
-        "**Conclusion.** A real, large source of default risk (A) is invisible to point-in-time "
-        "tabular models (C); recovering it would nearly double PR-AUC (B). The foundation model "
-        "reads each loan's behavioural *sequence* to recover that latent — that headroom above "
-        "the baseline is the project's thesis, now quantified.",
+        f"**(C)** but a tabular model *can't* recover the segment -- overall {acc*100:.0f}% "
+        f"accuracy vs {maj*100:.0f}% from always guessing the majority. Per-segment recall shows "
+        "it leans on the majority class and misses the rest:", "",
+        "| Segment | loans (test) | recall |", "|---|--:|--:|",
+        *[f"| {int(s)} | {int(sup[s]):,} | {r*100:.1f}% |" for s, r in zip(segs, rec)],
+        "",
+        "**Conclusion.** The segment is a real, large source of default risk (A) that tabular "
+        "models can only weakly recover (C); a model that could fully see it would nearly double "
+        "PR-AUC (B). The foundation model reads each loan's behavioural *sequence* to recover that "
+        "latent -- that headroom above the baseline is the project's thesis, now quantified.",
     ]
-
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
