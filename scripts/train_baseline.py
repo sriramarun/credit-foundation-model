@@ -206,19 +206,43 @@ def main() -> None:
     if args.report:
         rep = Path(args.report)
         rep.parent.mkdir(parents=True, exist_ok=True)
-        lines = ["# Baseline Report — XGBoost (Gate G1)", "",
-                 f"Config `{args.config}` · split `{args.data_dir}` (temporal, DL-007). "
-                 f"Observation `{cfg['obs_date']}`; label = `{lc}`=={cfg['label_value']} within "
-                 f"{cfg['horizon_months']} cutoffs.", "",
-                 "| Config | test ROC-AUC | test PR-AUC | pos% |", "|---|--:|--:|--:|"]
+        n_full = len(cat_full) + len(num_full)
+        n_clean = len(cat_clean) + len(num_clean)
+        gate_vals = ", ".join(map(str, cfg["gate_values"]))
+        lines = [
+            "# Baseline Report — XGBoost (Gate G1)", "",
+            f"Config `{args.config}` · split `{args.data_dir}` (loan-stratified temporal, DL-007).",
+            "", "## Setup", "",
+            f"- **Task:** observe each loan at `{cfg['obs_date']}`; predict whether "
+            f"`{lc}`=={cfg['label_value']} within the next **{cfg['horizon_months']} cutoffs** "
+            f"(`{fwd[0]}` ... `{fwd[-1]}`).",
+            "- **Population:** loans present at the observation date; loan-stratified temporal "
+            "split (train trains, test scores).",
+            f"- **Gate** keeps only currently-performing loans (`{cfg['gate_col']}` in "
+            f"{{{gate_vals}}}) -> predict *new* events.",
+            f"- **Feature sets:** *full* = {n_full}; *clean* = {n_clean} (drops the "
+            f"{len(cfg['leakage'])} leakage columns below).",
+            "", "## Results (test split)", "",
+            "| Config | ROC-AUC | PR-AUC | pos% |", "|---|--:|--:|--:|",
+        ]
         for name, n, pos, roc, pr in summ:
             lines.append(f"| {name} | {roc:.4f} | {pr:.4f} | {pos/max(n,1)*100:.2f}% |")
-        lines += ["", "## Reading it",
-                  "- **Leakage** (contemporaneous state) inflates (1); removing it → (3).",
-                  "- **Gate** = predict *new* events among currently-performing loans (realistic).",
-                  f"- **Gate G1 = config (4)**: ROC-AUC {summ[3][3]:.3f}, PR-AUC {summ[3][4]:.3f}.",
-                  "", "## Caveat",
-                  "- Synthetic data is rule-based, so the clean baseline runs high."]
+        lines += [
+            "", "## Reading it",
+            f"- **Gate G1 = config (4)**: ROC-AUC {summ[3][3]:.3f}, PR-AUC {summ[3][4]:.3f} "
+            "-- the honest bar the foundation model must beat.",
+            "- Removing the leakage columns (current-distress state, almost the answer) is the "
+            "(1)->(3) drop.",
+            "- The gate (predict *new* defaults among performing loans) is the realistic task.",
+            "",
+            f"**{len(cfg['leakage'])} leakage columns** (dropped in clean): "
+            + ", ".join(f"`{c}`" for c in cfg["leakage"]),
+            "",
+            f"**{len(cfg['exclude'])} excluded** (ids / deal metadata / constants -- never features): "
+            + ", ".join(f"`{c}`" for c in cfg["exclude"]),
+            "", "## Caveat",
+            "- Synthetic data is rule-based, so the clean baseline runs higher than a real portfolio.",
+        ]
         lines += seg_lines
         lines += ["", f"Reproduce: `python scripts/train_baseline.py --config {args.config} "
                   f"--data-dir {args.data_dir} --book {args.book} --report {args.report}`", ""]
