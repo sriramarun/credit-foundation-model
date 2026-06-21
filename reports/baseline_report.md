@@ -1,8 +1,17 @@
 # Baseline Report — XGBoost (Gate G1)
 
-Config `configs/dutch_mortgages/baseline.yaml` · split `data/processed` (temporal, DL-007). Observation `2024-12-31`; label = `default_crr_flag`==Y within 6 cutoffs.
+Config `configs/dutch_mortgages/baseline.yaml` · split `data/processed` (loan-stratified temporal, DL-007).
 
-| Config | test ROC-AUC | test PR-AUC | pos% |
+## Setup
+
+- **Task:** observe each loan at `2024-12-31`; predict whether `default_crr_flag`==Y within the next **6 cutoffs** (`2025-01-31` ... `2025-06-30`).
+- **Population:** loans present at the observation date; loan-stratified temporal split (train trains, test scores).
+- **Gate** keeps only currently-performing loans (`arrears_bucket` in {Performing, 1-29 DPD, 30-59 DPD, 60-89 DPD}) -> predict *new* events.
+- **Feature sets:** *full* = 58; *clean* = 50 (drops the 8 leakage columns below).
+
+## Results (test split)
+
+| Config | ROC-AUC | PR-AUC | pos% |
 |---|--:|--:|--:|
 | (1) full features, no gate | 0.9288 | 0.8045 | 4.00% |
 | (2) full features + gate | 0.8382 | 0.4345 | 1.71% |
@@ -10,12 +19,16 @@ Config `configs/dutch_mortgages/baseline.yaml` · split `data/processed` (tempor
 | (4) no-leakage + gate (Gate G1) | 0.7391 | 0.0463 | 1.71% |
 
 ## Reading it
-- **Leakage** (contemporaneous state) inflates (1); removing it → (3).
-- **Gate** = predict *new* events among currently-performing loans (realistic).
-- **Gate G1 = config (4)**: ROC-AUC 0.739, PR-AUC 0.046.
+- **Gate G1 = config (4)**: ROC-AUC 0.739, PR-AUC 0.046 -- the honest bar the foundation model must beat.
+- Removing the leakage columns (current-distress state, almost the answer) is the (1)->(3) drop.
+- The gate (predict *new* defaults among performing loans) is the realistic task.
+
+**8 leakage columns** (dropped in clean): `arrears_bucket`, `performing_status`, `default_crr_flag`, `foreclosure_flag`, `days_past_due`, `arrears_amount`, `forbearance_flag`, `restructuring_flag`
+
+**11 excluded** (ids / deal metadata / constants -- never features): `transaction_name`, `esma_transaction_identifier`, `closing_date`, `maturity_date_proxy`, `originator_name`, `servicer_name`, `currency`, `country`, `property_valuation_type`, `interest_payment_frequency`, `principal_payment_frequency`
 
 ## Caveat
-- Synthetic data is rule-based, so the clean baseline runs high.
+- Synthetic data is rule-based, so the clean baseline runs higher than a real portfolio.
 
 ## Architectural validation — the hidden `_segment` ceiling
 
