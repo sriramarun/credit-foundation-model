@@ -5,8 +5,14 @@ Guidance for Claude Code (and humans) working in this repo. Read this first when
 ## What this is
 
 An **open-source (Apache 2.0) framework for training credit foundation models** (`credit_fm`
-package) plus two reference implementations (Dutch mortgages, invoice financing). Co-founder
-engagement: **finevals.ai × Sriram Krishnan**, NVIDIA-sponsored (8× H100), ~12-week delivery.
+package) plus reference implementations. Co-founder engagement: **finevals.ai × Sriram
+Krishnan**, NVIDIA-sponsored (8× H100), ~12-week delivery.
+
+**Primary corpus: Fannie Mae Single-Family Loan Performance** (real-world US fixed-rate
+mortgages, ~25 years, ~100 quarterly parquet snapshots from GCS) — see
+`docs/data/fannie_mae.md`. The **Dutch mortgages** synthetic panel is now the controlled
+**validation/ablation** set (it carries the hidden `_segment` ceiling proof). **Invoice
+financing** remains a planned third reference.
 
 Approach: **encoder-only, masked-language-modelling** over tabular credit-event sequences
 (PRAGMA-style), three-branch architecture, key-value-time tokenization. The thesis: a sequence
@@ -26,10 +32,10 @@ foundation model beats point-in-time tabular baselines (XGBoost) on credit tasks
 ## Repo layout
 src/credit_fm/ tokenizer/ (KVT) · models/ (3-branch) · data/ · training/ · inference/ · evaluation/ · utils/
 scripts/ prepare_data, classify_schema, train_baseline, train_tokenizer, pretrain,
-extract_embeddings, evaluate_downstream, score_portfolio, setup_container.sh
-configs/ dutch_mortgages/ · invoice_financing/ (YAML per asset class)
+extract_embeddings, evaluate_downstream, score_portfolio, ingest_fannie_mae, setup_container.sh
+configs/ fannie_mae/ (PRIMARY) · dutch_mortgages/ (validation) · invoice_financing/ (planned)
 notebooks/ 00_smoke_test_splits, 01–05 walkthroughs
-reference_implementations/ per-asset README, cards, train.sh, evaluate.sh
+reference_implementations/ fannie_mae/ (primary) · dutch_mortgages/ · invoice_financing/
 models/ checkpoints (Git LFS) reports/ baseline_report.md, ...
 docs/ architecture, tokenization, training, evaluation, decision_log, model_cards/
 app/ FastAPI dashboard tests/ test_data.py (real), others stubs
@@ -49,7 +55,13 @@ FM is meant to break. `train_baseline.py --book data/raw/loan_book.parquet` show
 **Next:** tokenizer build (`tokenizer/vocabulary.py` → `numeric_bucketer` → `categorical`/
 `temporal` → `KVTTokenizer`, vocab on `train` only) → Milestone **M1**.
 ## Data (none committed — all gitignored)
-- **Panel:** `data/raw/all_cutoffs.parquet` (canonical; 500k loans × 24 monthly cutoffs, 71
+- **Fannie Mae (PRIMARY):** ~100 quarterly parquet snapshots in GCS → `scripts/ingest_fannie_mae.py`
+  (`--gcs gs://… --quarters 2018Q1 2018Q2`) writes `data/raw/fannie_mae/panel.parquet` with derived
+  `origination_date`, `reporting_date`, `default_event` (D180 or Zero-Balance credit event),
+  `prepay_event`, `is_performing`. Then `prepare_data.py --origination-col origination_date`
+  (real origination, no seasoning derivation). Config: `configs/fannie_mae/baseline.yaml`;
+  notes: `docs/data/fannie_mae.md`. GCS auth via `GOOGLE_APPLICATION_CREDENTIALS` + `gcsfs`.
+- **Dutch mortgages (VALIDATION):** `data/raw/all_cutoffs.parquet` (canonical; 500k loans × 24 monthly cutoffs, 71
   ESMA Annex 2 cols). Source: HF `Algoritmica/green-lion-2024-2025` / deeploans generator.
   (Older `Overall_2024_2025_all_months.parquet` is a prior extract.)
 - **Splits:** `python scripts/prepare_data.py --input data/raw/all_cutoffs.parquet` →
@@ -59,16 +71,18 @@ FM is meant to break. `train_baseline.py --book data/raw/loan_book.parquet` show
   `_cohort_quality`. **NEVER use these as model features** — they're ground-truth only, not in
   production. Use only for the ceiling validation. (The matching file is the generator run whose
   `_segment` predicts this panel's defaults — verify with a segment-conditional default rate.)
-- **No `origination_date` column** — the temporal split derives origination =
-  `reporting_date − seasoning_months` (DL-007).
+- **No `origination_date` column** (Dutch panel only) — its temporal split derives origination =
+  `reporting_date − seasoning_months` (DL-007). Fannie has a real origination date.
 ## Conventions
 - Python 3.10+. **`ruff`** clean + **`pytest`** green before every commit. Type hints on public
   APIs; Google-style docstrings. Every file: SPDX header + `Copyright (c) 2026 finevals.ai`.
 - **Leakage rules** (critical for credit): split by `loan_id` (never row); temporal by
-  origination; vocab/bins fit on `train` only (DL-008); the 8 contemporaneous-state columns
-  (`arrears_bucket`, `performing_status`, `default_crr_flag`, `foreclosure_flag`, `days_past_due`,
-  `arrears_amount`, `forbearance_flag`, `restructuring_flag`) are leakage for default prediction —
-  the honest baseline drops them and gates to performing-at-observation.
+  origination; vocab/bins fit on `train` only (DL-008). Dutch leakage = the 8 contemporaneous-state
+  columns (`arrears_bucket`, `performing_status`, `default_crr_flag`, `foreclosure_flag`,
+  `days_past_due`, `arrears_amount`, `forbearance_flag`, `restructuring_flag`); Fannie leakage =
+  current delinquency status / zero-balance / foreclosure-disposition / loss columns
+  (see `configs/fannie_mae/baseline.yaml`). The honest baseline drops them and gates to
+  performing-at-observation.
 - **Config is generated, not hand-edited**: `tokenizer.yaml` comes from `scripts/classify_schema.py`
   (its header records the regenerate command). Redundancy pruning lives in code (`find_redundant`),
   not manual edits.
