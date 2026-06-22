@@ -1,0 +1,64 @@
+# Baseline task config — Fannie Mae Single-Family Loan Performance (PRIMARY, real-world).
+# Asset-specific knobs live here so scripts/train_baseline.py stays generic.
+# Label/gate columns are derived in scripts/ingest_fannie_mae.py (default = D180 or a
+# Zero-Balance credit event); see docs/data/fannie_mae.md.
+id_col: loan_id
+time_col: reporting_date
+label_col: default_event           # bool derived in ingest (dlq>=6 OR credit-event ZBC)
+label_value: true
+obs_date: "2020-12-31"             # observation cutoff — ALIGN to the ingested sample's range
+horizon_months: 12                 # mortgages default slowly; predict default within 12 months
+
+gate_col: is_performing            # "currently performing" filter (predict NEW defaults)
+gate_values: [true]
+
+exclude:                           # ids / metadata / non-features
+  - reference_pool_id
+  - seller_name
+  - servicer_name
+  - master_servicer
+  - deal_name
+  - reporting_period               # superseded by derived reporting_date
+  - orig_date                      # superseded by derived origination_date
+  - first_payment_date
+  - maturity_date
+
+leakage:                           # contemporaneous-state / outcome-revealing — drop for default
+  - current_dlq_status
+  - dlq_num
+  - zero_balance_code
+  - zero_balance_effective_date
+  - zero_balance_code_change_date
+  - default_event                  # the label itself
+  - prepay_event
+  - is_performing
+  - modification_flag
+  - foreclosure_date
+  - disposition_date
+  - last_paid_installment_date
+  - repurchase_date
+  - upb_at_removal
+  - foreclosure_costs
+  - property_preservation_repair_costs
+  - asset_recovery_costs
+  - misc_holding_expenses
+  - holding_taxes
+  - net_sales_proceeds
+  - credit_enhancement_proceeds
+  - repurchase_make_whole_proceeds
+  - modification_related_noninterest_upb
+  - principal_forgiveness_amount
+  - principal_writeoff_amount
+  - delinquent_accrued_interest
+  - current_period_modification_loss
+  - cumulative_modification_loss
+  - current_period_credit_event_net_gain
+  - cumulative_credit_event_net_gain
+  - borrower_assistance_plan
+  - servicing_activity_indicator
+  - total_deferral_amount
+  - payment_deferral_modification_event
+  - alternative_delinquency_resolution
+
+# NOTE: Fannie is real data with NO synthetic hidden-segment latent — the _segment ceiling
+# validation is Dutch-only. Omit segment_col here.
