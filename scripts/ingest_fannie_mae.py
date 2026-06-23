@@ -1,35 +1,46 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 finevals.ai and contributors.
-"""Ingest Fannie Mae Single-Family Loan Performance quarterly parquet snapshots.
+"""Ingest Fannie Mae Single-Family Loan Performance parquet snapshots.
 
-Source: ~100 quarterly parquet files in a GCS bucket (one per acquisition quarter,
-e.g. ``2018Q1.parquet`` holds every monthly performance row for loans *acquired* that
-quarter across their whole life). This script reads a chosen set of quarters, normalises
-the column names to the canonical snake_case schema (``docs/data/fannie_mae.md``), derives
-the modelling columns the generic pipeline needs, and writes:
+Source (GCS bucket ``sriram-credit-fm-data``) is **Hive-partitioned by reporting period**:
 
-  * ``<out>/quarter=<YYYYQn>/part.parquet``  — per-quarter, for scale-out later, and
-  * ``<out>/panel.parquet``                  — the combined sample the dev pipeline reads.
+    fannie_by_reporting/reporting_year=<YYYY>/reporting_quarter=<Q#>/from_<acqQ>_*.parquet
 
-Derived columns (so ``train_baseline.py`` / ``prepare_data.py`` stay asset-generic):
-  * ``reporting_date``     month-end Timestamp parsed from Monthly Reporting Period (MMYYYY)
-  * ``origination_date``   Timestamp parsed from Origination Date (MMYYYY) — real, not derived
-  * ``dlq_num``            Current Loan Delinquency Status as int (``XX``/blank -> NaN)
-  * ``default_event``      True if dlq_num >= 6 (D180) OR zero_balance_code in a credit event
-  * ``prepay_event``       True if zero_balance_code == '01' (prepaid/matured)
-  * ``is_performing``      True if current (dlq_num == 0) and not yet terminated
+i.e. partitioned by the *observation* quarter; within each partition, files are sharded by
+acquisition cohort (``from_2000Q1`` = loans originated ~2000Q1). One file therefore holds the
+monthly rows (3 per loan) for one (reporting-quarter, cohort) slice. The published schema is the
+113-field Fannie layout with snake_case names (``loan_identifier``, ``monthly_reporting_period``,
+``origination_date``, ``current_loan_delinquency_status``, ``zero_balance_code``, ...).
 
-Dev sample first:
+This reads a chosen set of slices, derives the modelling columns the generic pipeline needs, and
+writes ``<out>/panel.parquet`` (the combined panel the dev pipeline reads) plus per-source parts.
+
+Derived columns (so ``prepare_data.py`` / ``train_baseline.py`` stay asset-generic):
+  * ``loan_id``           renamed from ``loan_identifier``
+  * ``reporting_date``    ISO 'YYYY-MM-DD' month-end string from ``monthly_reporting_period`` (MMYYYY)
+  * ``origination_date``  the MMYYYY string parsed in place to an ISO date string (the split key)
+  * ``dlq_num``           ``current_loan_delinquency_status`` as int (``XX``/blank -> NaN)
+  * ``default_event``     True if dlq_num >= 6 (D180) OR zero_balance_code is a credit event
+  * ``prepay_event``      True if zero_balance_code == '01' (prepaid/matured)
+  * ``is_performing``     True if current (dlq_num == 0) and not yet terminated
+
+Examples
+--------
+Dev sample from explicit local files (the two placed in data/raw):
+    python scripts/ingest_fannie_mae.py --files \
+        data/raw/fannie_by_reporting_reporting_year=2016_reporting_quarter=Q1_from_2000Q1_0.parquet \
+        data/raw/fannie_by_reporting_reporting_year=2016_reporting_quarter=Q1_from_2002Q1_0.parquet
+
+Hive read from GCS (a span of reporting quarters — needed for a real forward-horizon baseline):
     python scripts/ingest_fannie_mae.py \
-        --gcs gs://<bucket>/<prefix> --quarters 2018Q1 2018Q2 \
-        --out data/raw/fannie_mae
-Then scale by widening --quarters (or --all) once the pipeline is proven end to end.
+        --gcs-root gs://sriram-credit-fm-data/fannie_by_reporting \
+        --reporting 2016Q1 2016Q2 2016Q3 2016Q4 2017Q1 2017Q2 2017Q3 2017Q4
 """
 
 from __future__ import annotations
 
 import argparse
-import re
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -39,46 +50,45 @@ ZBC_CREDIT_EVENT = {"02", "03", "09", "15"}  # third-party sale, short sale, REO
 ZBC_PREPAY = {"01"}                          # prepaid or matured
 D180 = 6                                     # months delinquent that defines a default
 
-# Aliases -> canonical name, for the handful of columns the derivations depend on.
-# Fannie's published parquet uses these names; map common variants defensively. After the
-# first dev run the column report prints what was actually found, so this can be tightened.
-CRITICAL_ALIASES = {
-    "loan_identifier": "loan_id",
-    "loan id": "loan_id",
-    "monthly_reporting_period": "reporting_period",
-    "monthly reporting period": "reporting_period",
-    "origination_date": "orig_date",
-    "origination date": "orig_date",
-    "current_loan_delinquency_status": "current_dlq_status",
-    "current loan delinquency status": "current_dlq_status",
-    "loan_delinquency_status": "current_dlq_status",
-    "zero_balance_code": "zero_balance_code",
-    "zero balance code": "zero_balance_code",
-}
-REQUIRED = ["loan_id", "reporting_period", "orig_date", "current_dlq_status", "zero_balance_code"]
+DEFAULT_KEY = "/workspace/.gcloud/credit-fm-sa.json"  # GCS service-account key on the container
+
+# Real published column names the derivations depend on.
+COL_ID = "loan_identifier"
+COL_REPORTING = "monthly_reporting_period"
+COL_ORIG = "origination_date"
+COL_DLQ = "current_loan_delinquency_status"
+COL_ZBC = "zero_balance_code"
+REQUIRED = [COL_ID, COL_REPORTING, COL_ORIG, COL_DLQ, COL_ZBC]
 
 
-def _norm_cols(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.rename(columns=lambda c: re.sub(r"\s+", "_", str(c).strip().lower()))
-    return df.rename(columns={k.replace(" ", "_"): v for k, v in CRITICAL_ALIASES.items()})
+def _iso_month_end(s: pd.Series) -> pd.Series:
+    """Fannie dates are MMYYYY strings (e.g. '012016'); return ISO 'YYYY-MM-DD' month-end strings.
 
-
-def _parse_mmyyyy(s: pd.Series) -> pd.Series:
-    """Fannie dates are MMYYYY (sometimes M/D/YYYY in older mirrors); coerce to month-end."""
+    The pipeline convention is an ISO-date *string* time column (chronologically sortable, and
+    what ``train_baseline`` / ``prepare_data`` compare against) — not a timestamp.
+    """
     txt = s.astype("string").str.strip()
     dt = pd.to_datetime(txt, format="%m%Y", errors="coerce")
-    if dt.isna().mean() > 0.5:                       # fall back to a permissive parse
+    if dt.notna().any() and dt.isna().mean() > 0.5:   # permissive fallback for odd mirrors
         dt = pd.to_datetime(txt, errors="coerce")
-    return dt + pd.offsets.MonthEnd(0)
+    dt = dt + pd.offsets.MonthEnd(0)
+    return dt.dt.strftime("%Y-%m-%d").where(dt.notna(), pd.NA)
 
 
 def _derive(df: pd.DataFrame) -> pd.DataFrame:
-    df["reporting_date"] = _parse_mmyyyy(df["reporting_period"])
-    df["origination_date"] = _parse_mmyyyy(df["orig_date"])
+    missing = [c for c in REQUIRED if c not in df.columns]
+    if missing:
+        raise SystemExit(
+            f"Missing expected Fannie columns {missing}. Got {len(df.columns)} cols; "
+            f"first 30: {sorted(df.columns)[:30]}")
 
-    dlq = df["current_dlq_status"].astype("string").str.strip()
-    df["dlq_num"] = pd.to_numeric(dlq, errors="coerce")  # 'XX'/'' -> NaN
-    zbc = df["zero_balance_code"].astype("string").str.strip().str.zfill(2)
+    df = df.rename(columns={COL_ID: "loan_id"})
+    df["reporting_date"] = _iso_month_end(df[COL_REPORTING])       # ISO 'YYYY-MM-DD' string
+    df["origination_date"] = _iso_month_end(df[COL_ORIG])          # ISO string, in place
+
+    dlq = df[COL_DLQ].astype("string").str.strip()
+    df["dlq_num"] = pd.to_numeric(dlq, errors="coerce")           # 'XX'/'' -> NaN
+    zbc = df[COL_ZBC].astype("string").str.strip().str.zfill(2)
 
     df["default_event"] = (df["dlq_num"] >= D180) | zbc.isin(ZBC_CREDIT_EVENT)
     df["prepay_event"] = zbc.isin(ZBC_PREPAY)
@@ -86,62 +96,69 @@ def _derive(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _column_report(df: pd.DataFrame) -> None:
-    print("  columns:", len(df.columns))
-    missing = [c for c in REQUIRED if c not in df.columns]
-    if missing:
-        print(f"  !! MISSING canonical columns {missing} — add aliases to CRITICAL_ALIASES")
-        print(f"     available: {sorted(df.columns)[:40]}{' ...' if len(df.columns) > 40 else ''}")
+def _hive_path(root: str, reporting: str) -> str:
+    """'2016Q1' -> '<root>/reporting_year=2016/reporting_quarter=Q1'."""
+    year, _, q = reporting.partition("Q")
+    if not (year.isdigit() and q.isdigit()):
+        raise SystemExit(f"--reporting expects YYYYQn (e.g. 2016Q1), got '{reporting}'")
+    return f"{root.rstrip('/')}/reporting_year={year}/reporting_quarter=Q{q}"
 
 
-def _read_one(base: str, quarter: str) -> pd.DataFrame:
-    # try a few common file naming conventions under the prefix
-    for name in (f"{quarter}.parquet", f"{quarter}/part.parquet", f"{quarter}/*.parquet"):
-        path = f"{base.rstrip('/')}/{name}"
-        try:
-            return pd.read_parquet(path)
-        except Exception:
-            continue
-    raise SystemExit(f"Could not read quarter {quarter} under {base} (tried .parquet / dir forms)")
+def _resolve_sources(args) -> list[str]:
+    if args.files:
+        return args.files
+    root = args.gcs_root or args.local_root
+    if not args.reporting:
+        raise SystemExit("--gcs-root/--local-root needs --reporting (e.g. 2016Q1 2016Q2).")
+    return [_hive_path(root, r) for r in args.reporting]
+
+
+def _maybe_auth(key: str) -> None:
+    """Point gcsfs at the service-account key if one is available and not already set."""
+    if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        return
+    if key and Path(key).exists():
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key
+        print(f"Using GCS key: {key}")
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__)
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     src = ap.add_mutually_exclusive_group(required=True)
-    src.add_argument("--gcs", help="gs://bucket/prefix holding the quarterly parquet files")
-    src.add_argument("--local", help="local dir holding the quarterly parquet files")
-    ap.add_argument("--quarters", nargs="+", help="e.g. 2018Q1 2018Q2 (dev sample)")
+    src.add_argument("--files", nargs="+", help="explicit parquet files (local or gs://)")
+    src.add_argument("--gcs-root", help="gs://bucket/fannie_by_reporting (Hive-partitioned)")
+    src.add_argument("--local-root", help="local dir holding the Hive-partitioned layout")
+    ap.add_argument("--reporting", nargs="+", help="reporting quarters, e.g. 2016Q1 2016Q2")
     ap.add_argument("--out", default="data/raw/fannie_mae")
     ap.add_argument("--combined-name", default="panel.parquet")
+    ap.add_argument("--key", default=DEFAULT_KEY, help="GCS service-account JSON")
     args = ap.parse_args()
 
-    base = args.gcs or args.local
-    if not args.quarters:
-        raise SystemExit("Pass --quarters (dev: a quarter or two). Full-scale ingest comes later.")
-
+    _maybe_auth(args.key)
+    sources = _resolve_sources(args)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+
     frames = []
-    for q in args.quarters:
-        print(f"Reading {q} from {base} ...")
-        df = _norm_cols(_read_one(base, q))
-        _column_report(df)
-        df = _derive(df)
-        qdir = out / f"quarter={q}"
-        qdir.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(qdir / "part.parquet", index=False)
-        print(f"  {q}: {len(df):>10,} rows  "
-              f"default_rate={df['default_event'].mean():.4%}  "
-              f"performing={df['is_performing'].mean():.1%}")
+    for i, s in enumerate(sources):
+        print(f"Reading {s} ...")
+        df = _derive(pd.read_parquet(s))               # read_parquet handles file or hive dir
+        part = out / f"part_{i:04d}.parquet"
+        df.to_parquet(part, index=False)
+        print(f"  {len(df):>10,} rows  {df['loan_id'].nunique():>8,} loans  "
+              f"reporting {df['reporting_date'].min()}..{df['reporting_date'].max()}  "
+              f"default={df['default_event'].mean():.4%}  performing={df['is_performing'].mean():.1%}")
         frames.append(df)
 
     panel = pd.concat(frames, ignore_index=True)
     panel.to_parquet(out / args.combined_name, index=False)
     print(f"\nWrote {out}/{args.combined_name}: {len(panel):,} rows, "
           f"{panel['loan_id'].nunique():,} loans, "
-          f"reporting {panel['reporting_date'].min().date()} -> {panel['reporting_date'].max().date()}")
-    print("Next: scripts/prepare_data.py --input "
-          f"{out}/{args.combined_name} --origination-col origination_date")
+          f"reporting {panel['reporting_date'].min()} -> {panel['reporting_date'].max()}, "
+          f"origination {panel['origination_date'].min()} -> {panel['origination_date'].max()}")
+    print(f"Next: scripts/prepare_data.py --input {out}/{args.combined_name} "
+          f"--origination-col origination_date")
 
 
 if __name__ == "__main__":

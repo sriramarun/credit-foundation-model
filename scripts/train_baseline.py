@@ -25,14 +25,16 @@ import xgboost as xgb
 import yaml
 from sklearn.metrics import (accuracy_score, average_precision_score, recall_score, roc_auc_score)
 
+from credit_fm.utils import storage
 
-def forward_cutoffs(path: Path, time_col: str, obs: str, horizon: int) -> list[str]:
+
+def forward_cutoffs(path: str, time_col: str, obs: str, horizon: int) -> list[str]:
     """The next `horizon` distinct cutoffs strictly after `obs` (ISO dates sort chronologically)."""
     cutoffs = sorted(pd.read_parquet(path, columns=[time_col])[time_col].astype(str).unique())
     return [c for c in cutoffs if c > obs][:horizon]
 
 
-def load_obs(path: Path, cfg: dict, fwd: list[str]) -> pd.DataFrame:
+def load_obs(path: str, cfg: dict, fwd: list[str]) -> pd.DataFrame:
     tc, idc, lc, lv = cfg["time_col"], cfg["id_col"], cfg["label_col"], str(cfg["label_value"])
     obs = pd.read_parquet(path, filters=[(tc, "=", cfg["obs_date"])])
     fut = pd.read_parquet(path, columns=[idc, lc], filters=[(tc, "in", fwd)])
@@ -165,18 +167,22 @@ def segment_validation(obs, cat_clean, num_clean, cfg):
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default="configs/dutch_mortgages/baseline.yaml")
-    ap.add_argument("--data-dir", default="data/processed")
+    ap.add_argument("--data-dir", default="data/processed",
+                    help="splits location; local path or gs:///s3:// URL")
+    ap.add_argument("--key", default=storage.GCS_DEFAULT_KEY, help="GCS service-account JSON")
     ap.add_argument("--book", default="data/raw/loan_book.parquet")
     ap.add_argument("--report", default=None)
     args = ap.parse_args()
     cfg = yaml.safe_load(open(args.config))
-    d = Path(args.data_dir)
+    d = args.data_dir.rstrip("/")                 # pluggable: local path or gs:///s3:// URL
+    storage.ensure_auth(d, args.key)
     idc, tc, lc = cfg["id_col"], cfg["time_col"], cfg["label_col"]
 
     t0 = time.time()
-    fwd = forward_cutoffs(d / "train.parquet", tc, cfg["obs_date"], int(cfg["horizon_months"]))
+    fwd = forward_cutoffs(storage.join(d, "train.parquet"), tc,
+                          cfg["obs_date"], int(cfg["horizon_months"]))
     print(f"obs {cfg['obs_date']} -> forward {fwd[0]}..{fwd[-1]} ({len(fwd)} cutoffs)")
-    obs = {s: load_obs(d / f"{s}.parquet", cfg, fwd) for s in ("train", "val", "test")}
+    obs = {s: load_obs(storage.join(d, f"{s}.parquet"), cfg, fwd) for s in ("train", "val", "test")}
     cohort = {}
     for s, o in obs.items():
         og = o[o[cfg["gate_col"]].isin(cfg["gate_values"])]
@@ -269,7 +275,7 @@ def main() -> None:
             f"**{len(cfg['exclude'])} excluded** (ids / deal metadata / constants -- never features): "
             + ", ".join(f"`{c}`" for c in cfg["exclude"]),
             "", "## Caveat",
-            "- Synthetic data is rule-based, so the clean baseline runs higher than a real portfolio.",
+            f"- {cfg.get('caveat', 'Synthetic data is rule-based, so the clean baseline runs higher than a real portfolio.')}",
         ]
         lines += seg_lines
         lines += ["", f"Reproduce: `python scripts/train_baseline.py --config {args.config} "
