@@ -13,6 +13,10 @@ horizon_months: 12                 # ingested (e.g. 2016Q1..2017Q4). The 2-file 
 gate_col: is_performing            # "currently performing" filter (predict NEW defaults)
 gate_values: [true]
 
+caveat: >-
+  Real-world Fannie Mae loan performance — default rates and lift reflect an actual portfolio
+  (no synthetic inflation). Numbers depend on the ingested reporting span and observation date.
+
 exclude:                           # ids / metadata / raw dates / high-card geo / non-tabular
   - reference_pool_id
   - monthly_reporting_period       # raw MMYYYY string, superseded by derived reporting_date
