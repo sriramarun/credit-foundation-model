@@ -1,30 +1,37 @@
 # Baseline task config — Fannie Mae Single-Family Loan Performance (PRIMARY, real-world).
 # Asset-specific knobs live here so scripts/train_baseline.py stays generic.
-# Label/gate columns are derived in scripts/ingest_fannie_mae.py (default = D180 or a
-# Zero-Balance credit event); see docs/data/fannie_mae.md.
+# Column names are the REAL published Fannie schema (113 fields, verified against the data);
+# label/gate columns are derived in scripts/ingest_fannie_mae.py. See docs/data/fannie_mae.md.
 id_col: loan_id
 time_col: reporting_date
-label_col: default_event           # bool derived in ingest (dlq>=6 OR credit-event ZBC)
+label_col: default_event           # bool derived in ingest (dlq>=6 D180, OR credit-event ZBC)
 label_value: true
-obs_date: "2020-12-31"             # observation cutoff — ALIGN to the ingested sample's range
-horizon_months: 12                 # mortgages default slowly; predict default within 12 months
+obs_date: "2016-12-31"             # observation cutoff — REQUIRES reporting span [obs, obs+horizon]
+horizon_months: 12                 # ingested (e.g. 2016Q1..2017Q4). The 2-file dev sample
+                                   # (2016Q1 only) proves plumbing, not a real metric.
 
 gate_col: is_performing            # "currently performing" filter (predict NEW defaults)
 gate_values: [true]
 
-exclude:                           # ids / metadata / non-features
+exclude:                           # ids / metadata / raw dates / high-card geo / non-tabular
   - reference_pool_id
+  - monthly_reporting_period       # raw MMYYYY string, superseded by derived reporting_date
+  - origination_date               # parsed datetime — the split key, not a feature
+  - first_payment_date
+  - maturity_date
   - seller_name
   - servicer_name
   - master_servicer
   - deal_name
-  - reporting_period               # superseded by derived reporting_date
-  - orig_date                      # superseded by derived origination_date
-  - first_payment_date
-  - maturity_date
+  - loan_payment_history           # 24-month delinquency-code string (non-tabular)
+  - metropolitan_statistical_area  # high-cardinality geo
+  - zip_code_short                 # high-cardinality geo
+  - interest_only_first_principal_and_interest_payment_date
+  - next_interest_rate_adjustment_date
+  - next_payment_change_date
 
-leakage:                           # contemporaneous-state / outcome-revealing — drop for default
-  - current_dlq_status
+leakage:                           # outcome / contemporaneous-termination / post-default servicing
+  - current_loan_delinquency_status
   - dlq_num
   - zero_balance_code
   - zero_balance_effective_date
@@ -37,28 +44,37 @@ leakage:                           # contemporaneous-state / outcome-revealing �
   - disposition_date
   - last_paid_installment_date
   - repurchase_date
-  - upb_at_removal
+  - upb_at_the_time_of_removal
   - foreclosure_costs
-  - property_preservation_repair_costs
+  - property_preservation_and_repair_costs
   - asset_recovery_costs
-  - misc_holding_expenses
-  - holding_taxes
+  - miscellaneous_holding_expenses_and_credits
+  - associated_taxes_for_holding_property
   - net_sales_proceeds
   - credit_enhancement_proceeds
   - repurchase_make_whole_proceeds
-  - modification_related_noninterest_upb
+  - repurchase_make_whole_proceeds_flag
+  - other_foreclosure_proceeds
+  - modification_related_non_interest_bearing_upb
   - principal_forgiveness_amount
-  - principal_writeoff_amount
+  - foreclosure_principal_write_off_amount
   - delinquent_accrued_interest
-  - current_period_modification_loss
-  - cumulative_modification_loss
-  - current_period_credit_event_net_gain
-  - cumulative_credit_event_net_gain
-  - borrower_assistance_plan
+  - current_period_modification_loss_amount
+  - cumulative_modification_loss_amount
+  - current_period_credit_event_net_gain_or_loss
+  - cumulative_credit_event_net_gain_or_loss
   - servicing_activity_indicator
+  - borrower_assistance_plan
   - total_deferral_amount
-  - payment_deferral_modification_event
+  - payment_deferral_modification_event_indicator
   - alternative_delinquency_resolution
+  - alternative_delinquency_resolution_count
+  - original_list_start_date       # REO listing fields — only populated heading to disposition
+  - original_list_price
+  - current_list_start_date
+  - current_list_price
+  - loan_holdback_indicator
+  - loan_holdback_effective_date
 
 # NOTE: Fannie is real data with NO synthetic hidden-segment latent — the _segment ceiling
 # validation is Dutch-only. Omit segment_col here.

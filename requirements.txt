@@ -18,4 +18,7 @@ uvicorn
 pytest
 pytest-cov
 ruff
-gcsfs
+# pluggable storage (credit_fm.utils.storage): fsspec URLs — swap scheme for the backend
+fsspec
+gcsfs            # gs:// (GCS)
+# s3fs           # s3:// (AWS) — uncomment when moving the bucket to S3

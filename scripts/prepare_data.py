@@ -2,41 +2,41 @@
 # Copyright (c) 2026 finevals.ai and contributors.
 """Split a raw credit panel into loan-stratified temporal train/val/test parquets.
 
-Writes ``data/processed/{train,val,test}.parquet`` (the whole 24-cutoff history of a loan
-stays in one split), a ``splits.csv`` (``loan_id -> split``), and ``splits.meta.json`` — a
+Writes ``<out-dir>/{train,val,test}.parquet`` (the whole 24-cutoff history of a loan stays in
+one split), a ``splits.csv`` (``loan_id -> split``), and ``splits.meta.json`` — a
 reproducibility/audit trail (seed, source SHA-256, loan counts, origination ranges, commit).
+
+``--out-dir`` (and ``--input``) are **pluggable locations**: a local path, ``gs://…``, or
+``s3://…`` — only the URL scheme changes (see ``credit_fm.utils.storage``). So the splits can be
+written straight back into the cloud bucket under a new folder, e.g.
+``--out-dir gs://sriram-credit-fm-data/processed/fannie_mae/run_2016_2017``.
 
 Origination key (what the temporal split orders by) comes from one of two modes:
   * ``--origination-col COL``  — use an explicit origination-date column directly.
   * derive (default)           — the Dutch RMBS panel has no origination-date column, so
-    derive a month-precise origination from ``reporting_date - seasoning_months``
-    (verified constant per loan and consistent with ``origination_year``).
+    derive a month-precise origination from ``reporting_date - seasoning_months``.
 
-Example (Dutch mortgages, derive mode):
+Examples:
+    # Dutch (derive mode, local out)
     python scripts/prepare_data.py --input data/raw/Overall_2024_2025_all_months.parquet
+    # Fannie (real origination col, splits persisted to GCS)
+    python scripts/prepare_data.py --input data/raw/fannie_mae/panel.parquet \
+        --origination-col origination_date \
+        --out-dir gs://sriram-credit-fm-data/processed/fannie_mae/run_2016_2017
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import subprocess
 from datetime import date
-from pathlib import Path
 
 import pandas as pd
 
 from credit_fm.data.splits import SPLITS, temporal_loan_split
+from credit_fm.utils import storage
 from credit_fm.utils.reproducibility import set_seed
-
-
-def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _git_commit() -> str:
@@ -73,23 +73,27 @@ def _loan_origination(panel: pd.DataFrame, args) -> pd.Series:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--input", default="data/raw/Overall_2024_2025_all_months.parquet")
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--input", default="data/raw/Overall_2024_2025_all_months.parquet",
+                    help="raw panel; local path or gs:///s3:// URL")
     ap.add_argument("--id-col", default="loan_id")
     ap.add_argument("--origination-col", default=None,
                     help="explicit origination-date column; omit to derive from reporting-seasoning")
     ap.add_argument("--reporting-col", default="reporting_date")
     ap.add_argument("--seasoning-col", default="seasoning_months")
-    ap.add_argument("--out-dir", default="data/processed")
+    ap.add_argument("--out-dir", default="data/processed",
+                    help="pluggable destination; local path or gs:///s3:// URL")
+    ap.add_argument("--key", default=storage.GCS_DEFAULT_KEY, help="GCS service-account JSON")
     ap.add_argument("--fractions", default="0.8,0.1,0.1", help="train,val,test (sum to 1.0)")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
     set_seed(args.seed)
 
     fractions = tuple(float(x) for x in args.fractions.split(","))
-    in_path = Path(args.input)
-    out = Path(args.out_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    in_path, out = args.input, args.out_dir.rstrip("/")
+    storage.ensure_auth(in_path, args.key)
+    storage.ensure_auth(out, args.key)
 
     print(f"Loading {in_path} ...")
     panel = pd.read_parquet(in_path)
@@ -110,7 +114,7 @@ def main() -> None:
     ranges: dict[str, list[str]] = {}
     for s in SPLITS:
         sub = panel[panel["_split"] == s].drop(columns="_split")
-        sub.to_parquet(out / f"{s}.parquet", index=False)
+        storage.write_parquet(sub, storage.join(out, f"{s}.parquet"))
         orig_in = origination[split_series[split_series == s].index]
         counts[s] = int(split_series.eq(s).sum())
         ranges[s] = [str(orig_in.min().date()), str(orig_in.max().date())]
@@ -118,24 +122,26 @@ def main() -> None:
               f"origination {ranges[s][0]} -> {ranges[s][1]}")
 
     # loan_id -> split
-    split_series.rename_axis(args.id_col).reset_index().to_csv(out / "splits.csv", index=False)
+    csv = split_series.rename_axis(args.id_col).reset_index().to_csv(index=False)
+    storage.write_text(csv, storage.join(out, "splits.csv"))
 
     # audit manifest
     meta = {
         "seed": args.seed,
         "split_date": date.today().isoformat(),
-        "source_panel": str(in_path),
-        "source_panel_sha256": _sha256(in_path),
+        "source_panel": in_path,
+        "source_panel_sha256": storage.sha256(in_path),
         "n_loans": counts,
         "split_criterion": "loan_stratified_temporal_origination",
         "origination_key": mode,
         "fractions": list(fractions),
         "id_col": args.id_col,
         "origination_range": ranges,
+        "out_dir": out,
         "code_commit": _git_commit(),
     }
-    (out / "splits.meta.json").write_text(json.dumps(meta, indent=2))
-    print(f"Wrote {out}/splits.csv and {out}/splits.meta.json")
+    storage.write_text(json.dumps(meta, indent=2), storage.join(out, "splits.meta.json"))
+    print(f"Wrote splits + splits.csv + splits.meta.json to {out}")
 
 
 if __name__ == "__main__":

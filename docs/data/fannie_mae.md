@@ -1,10 +1,22 @@
 # Fannie Mae Single-Family Loan Performance — data notes
 
 **Primary pretraining corpus.** Real-world US single-family **fixed-rate** mortgages, ~25 years,
-sourced as ~100 **quarterly parquet snapshots** from a GCS bucket (one file per *acquisition
-quarter*; each file holds every monthly performance row for the loans acquired that quarter
-across their whole life). Source layout: Fannie Mae *Single-Family Loan Performance Dataset and
-Credit Risk Transfer — Glossary and File Layout* (113 fields).
+in the GCS bucket `gs://sriram-credit-fm-data`, **Hive-partitioned by reporting period**:
+
+    fannie_by_reporting/reporting_year=<YYYY>/reporting_quarter=<Q#>/from_<acqQ>_*.parquet
+
+i.e. partitioned by the *observation* quarter; within each partition, files are sharded by
+acquisition cohort (`from_2000Q1` = loans originated ~2000Q1). One file holds the monthly rows
+(3 per loan) for one (reporting-quarter, cohort) slice. Schema = the published Fannie *Single-
+Family Loan Performance* layout, **113 snake_case columns** (verified against the data:
+`loan_identifier`, `monthly_reporting_period`, `origination_date`,
+`current_loan_delinquency_status`, `zero_balance_code`, …; dates are `MMYYYY` strings).
+
+> **Span matters.** Because the data is partitioned by reporting period, one quarter = ~3 monthly
+> rows per loan. A meaningful forward-horizon baseline (observe at `obs_date`, predict default
+> within `horizon_months`) needs the reporting span **[obs_date, obs_date + horizon]** ingested —
+> e.g. obs 2016-12-31 + 12-month horizon → ingest `2016Q1..2017Q4`. A single quarter only
+> exercises the pipeline plumbing; the gated task has too few new defaults to score.
 
 ## Why it's the primary set (vs the Dutch synthetic panel)
 - **Real data** — makes the "FM beats tabular" thesis credible, not a synthetic artefact.
@@ -38,26 +50,43 @@ foreclosure/disposition dates, last-paid-installment, and all loss / proceeds / 
 / modification-loss columns. Split by `loan_id` (never row); temporal by origination; vocab/bins
 fit on `train` only.
 
-## Ingest → pipeline (dev sample first)
+## Ingest → pipeline
+Ingest reads either explicit files (local dev) or a span of reporting quarters from the GCS
+Hive layout (auto-loads the service-account key at `/workspace/.gcloud/credit-fm-sa.json`).
+
 ```bash
-# 1. sample a quarter or two from GCS -> parquet (+ derived columns)
-python scripts/ingest_fannie_mae.py --gcs gs://<bucket>/<prefix> \
-    --quarters 2018Q1 2018Q2 --out data/raw/fannie_mae
-# 2. loan-stratified temporal split on the REAL origination date
+# A. dev plumbing: explicit local sample files (proves the chain runs; not a real metric)
+python scripts/ingest_fannie_mae.py --files data/raw/<file1>.parquet data/raw/<file2>.parquet
+
+# B. real run: a multi-year reporting span from GCS (covers obs_date + horizon)
+python scripts/ingest_fannie_mae.py \
+    --gcs-root gs://sriram-credit-fm-data/fannie_by_reporting \
+    --reporting 2016Q1 2016Q2 2016Q3 2016Q4 2017Q1 2017Q2 2017Q3 2017Q4
+
+# then: loan-stratified temporal split (real orig date), persisted BACK to the bucket
 python scripts/prepare_data.py --input data/raw/fannie_mae/panel.parquet \
-    --origination-col origination_date
-# 3. generate the tokenizer config from the schema
+    --origination-col origination_date \
+    --out-dir gs://sriram-credit-fm-data/processed/fannie_mae/run_2016_2017
+# generated tokenizer config
 python scripts/classify_schema.py --input data/raw/fannie_mae/panel.parquet \
     --out configs/fannie_mae/tokenizer.yaml
-# 4. honest XGBoost baseline (Gate G1 for Fannie)
+# honest Gate-G1 baseline, reading the splits straight from the bucket
 python scripts/train_baseline.py --config configs/fannie_mae/baseline.yaml \
+    --data-dir gs://sriram-credit-fm-data/processed/fannie_mae/run_2016_2017 \
     --report reports/fannie_baseline_report.md
 ```
-Then scale by widening `--quarters` once the end-to-end run is green.
+
+`--out-dir` / `--data-dir` are **pluggable** (`credit_fm.utils.storage`): local path, `gs://`, or
+`s3://` — only the URL scheme changes. GCS auth auto-loads `/workspace/.gcloud/credit-fm-sa.json`;
+for a future S3 move, `pip install s3fs` and pass an `s3://…` URL (AWS creds via the env chain).
+
+## Derived columns (in `ingest_fannie_mae.py`)
+`loan_id` (← `loan_identifier`), `reporting_date` & `origination_date` (ISO `YYYY-MM-DD` strings,
+month-end, parsed from the `MMYYYY` fields), `dlq_num` (int; `XX`→NaN), `default_event`,
+`prepay_event`, `is_performing`. Verified: dlq codes `00..15`+`XX`; ZBC `01` prepay / `02,03,09,15`
+credit events.
 
 ## Open items
-- Confirm exact column names in the GCS parquet (the ingest column report prints what it finds;
-  tighten `CRITICAL_ALIASES` / the `exclude`/`leakage` lists to match).
-- Align `obs_date` in `baseline.yaml` to the ingested sample's reporting range.
-- GCS auth on the container: service-account JSON via `GOOGLE_APPLICATION_CREDENTIALS`
-  (in `/workspace/secrets.env`, never committed); `gcsfs` installed.
+- Align `obs_date` in `baseline.yaml` to the ingested reporting span (default 2016-12-31 / 12mo
+  assumes a 2016Q1..2017Q4 ingest).
+- For full pretraining, ingest the full reporting span (all ~years) — sizeable; partition output.
