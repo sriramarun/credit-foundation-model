@@ -38,3 +38,6 @@ scripts/train_tokenizer.py — fit the KVT tokenizer (Milestone M1)
 scripts/pretrain.py — pretrain the 3-branch model on 8× H100 (M3)
 scripts/extract_embeddings.py — embeddings from a checkpoint
 scripts/evaluate_downstream.py — embeddings vs baseline (the FM-vs-0.73 test)
+5. Fannie out-of-time (OOT) baseline  ← the honest bar for the FM
+python scripts/build_oot_baseline.py --train-years 2000-2006 --test-years 2008-2010 --sample-pct 20 --report reports/fannie_oot_crisis.md   # crisis stress test
+python scripts/build_oot_baseline.py --train-years 2000-2022 --test-years 2023-2025 --sample-pct 20 --report reports/fannie_oot_recent.md   # recent OOT (run via nohup — see reference_implementations/fannie_mae/README.md)

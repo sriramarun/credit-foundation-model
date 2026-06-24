@@ -152,10 +152,10 @@ def _process_file(blob_name: str) -> str:
     return str(out)
 
 
-def _xgb():
+def _xgb(device="cuda"):
     return xgb.XGBClassifier(n_estimators=400, max_depth=6, learning_rate=0.05, subsample=0.8,
                              colsample_bytree=0.8, eval_metric="aucpr", n_jobs=-1,
-                             tree_method="hist", early_stopping_rounds=30)
+                             tree_method="hist", device=device, early_stopping_rounds=30)
 
 
 def encode(df, cats, nums, cmap=None):
@@ -182,6 +182,9 @@ def main() -> None:
                     help="disjoint: a loan is wholly in train OR test (no leakage of identity)")
     ap.add_argument("--embargo-years", type=int, default=0,
                     help="extra gap (years) between train label windows and the test period")
+    ap.add_argument("--device", default="cuda", help="xgboost device: cuda (GPU) or cpu")
+    ap.add_argument("--neg-per-pos", type=int, default=0,
+                    help="downsample TRAIN negatives to N x positives (0 = keep all); test untouched")
     ap.add_argument("--config", default="configs/fannie_mae/baseline.yaml")
     ap.add_argument("--raw-schema", default="configs/fannie_mae/raw_schema.yaml")
     ap.add_argument("--staging", default="/workspace/staging_oot")
@@ -263,12 +266,23 @@ def main() -> None:
     # loan-disjoint 10% of train loans -> val (early stopping)
     is_val = pd.util.hash_pandas_object(train_obs.loan_id, index=False) % 10 == 0
     part = {"train": train_obs[~is_val], "val": train_obs[is_val], "test": test_obs}
+
+    # optional: downsample TRAIN negatives for rare-event speed/memory (test stays full -> honest)
+    if args.neg_per_pos > 0:
+        tr = part["train"]
+        pos, neg = tr[tr.y == 1], tr[tr.y == 0]
+        keep = min(len(neg), len(pos) * args.neg_per_pos)
+        part["train"] = pd.concat([pos, neg.sample(n=keep, random_state=42)])
+        print(f"neg-downsample: train {len(tr):,} -> {len(part['train']):,} "
+              f"({len(pos):,} pos + {keep:,} neg)")
+
     cats = [c for c in clean_features if obs[c].dtype == object]
     nums = [c for c in clean_features if obs[c].dtype != object]
     Xtr, cm = encode(part["train"], cats, nums)
     Xva, _ = encode(part["val"], cats, nums, cm)
     Xte, _ = encode(part["test"], cats, nums, cm)
-    m = _xgb()
+    print(f"training xgboost on {len(Xtr):,} rows x {Xtr.shape[1]} feats (device={args.device}) ...")
+    m = _xgb(args.device)
     m.fit(Xtr, part["train"].y, eval_set=[(Xva, part["val"].y)], verbose=False)
 
     rows = []
