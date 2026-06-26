@@ -11,9 +11,14 @@ A loan encodes to::
 
     [BOS] [USR]
       <profile tokens: original_ltv=4, channel=R, ...>           # once, from the loan's first row
-      [EVT_START] t=<age_bin> <event tokens: current_interest_rate=7, ...> [EVT_END]   # per month
+      [EVT_START] t=<age_bin> cal=<YYYYQ#> <event tokens: current_interest_rate=7, ...> [EVT_END]
       ...
     [EOS]
+
+The optional ``cal=`` token (config ``calendar: yearquarter|year``) anchors each event in absolute
+calendar time, so the History encoder can tell 2005 from 2008 — the macro-regime signal that pure
+loan-internal tokens lack. Real macro series (HPI / prevailing rate / unemployment), once joined
+into the panel, are just additional ``event`` fields.
 
 Everything is fit on TRAIN only and serialized (vocab + bin edges + categories), so val / test /
 inference reuse identical ids. Config (per asset) drives which fields go to which branch.
@@ -41,6 +46,9 @@ class KVTTokenizer(BaseTokenizer):
         profile: {numeric: [...], categorical: [...]}
         event:   {numeric: [...], categorical: [...]}
         n_bins (16), max_categories (256), max_events (60)
+        bins:     {field: n_bins}      # per-field granularity override
+        anchors:  {field: [cutpoints]} # forced bin boundaries at thresholds (e.g. LTV 80)
+        calendar: yearquarter|year|none  # absolute-time token per event (macro regime)
     """
 
     def __init__(self, config: dict):
@@ -49,6 +57,7 @@ class KVTTokenizer(BaseTokenizer):
         self._num: dict[str, NumericBucketer] = {}
         self._cat: dict[str, CategoricalTokenizer] = {}
         self._time: NumericBucketer | None = None
+        self._cal: CategoricalTokenizer | None = None
         self._parse_config()
 
     def _parse_config(self) -> None:
@@ -63,11 +72,26 @@ class KVTTokenizer(BaseTokenizer):
         self.n_bins = int(c.get("n_bins", 16))
         self.max_categories = int(c.get("max_categories", 256))
         self.max_events = int(c.get("max_events", 60))
+        self.bins = dict(c.get("bins", {}))          # per-field n_bins overrides
+        self.anchors = dict(c.get("anchors", {}))    # per-field forced cut-points
+        self.calendar = c.get("calendar", "none")    # 'yearquarter' | 'year' | 'none'
+
+    @staticmethod
+    def _calendar(dates, mode: str) -> pd.Series:
+        """ISO 'YYYY-MM-DD' reporting dates → absolute-time labels ('2008' or '2008Q1')."""
+        s = pd.Series(dates).astype("string")
+        year = s.str[:4]
+        if mode == "year":
+            return year
+        month = pd.to_numeric(s.str[5:7], errors="coerce")
+        quarter = ((month - 1) // 3 + 1).astype("Int64").astype("string")
+        return year + "Q" + quarter
 
     # ------------------------------------------------------------------ fit
     def fit(self, panel: pd.DataFrame) -> 'KVTTokenizer':
         """Fit every field tokenizer on the training panel and build the vocabulary."""
-        self._num = {f: NumericBucketer(self.n_bins).fit(panel[f]) for f in self.p_num + self.e_num}
+        self._num = {f: NumericBucketer(self.bins.get(f, self.n_bins), self.anchors.get(f)).fit(panel[f])
+                     for f in self.p_num + self.e_num}
         self._cat = {f: CategoricalTokenizer(self.max_categories).fit(panel[f])
                      for f in self.p_cat + self.e_cat}
         self._time = NumericBucketer(self.n_bins).fit(panel[self.time_field])
@@ -81,6 +105,11 @@ class KVTTokenizer(BaseTokenizer):
                 vocab.add(f"{f}={label}")
         for label in self._time.vocab():
             vocab.add(f"t={label}")
+        if self.calendar != "none":                  # absolute-time / macro-regime token
+            self._cal = CategoricalTokenizer(max_categories=512).fit(
+                self._calendar(panel[self.time_col], self.calendar))
+            for label in self._cal.vocab():
+                vocab.add(f"cal={label}")
         self.vocabulary = vocab
         return self
 
@@ -96,6 +125,9 @@ class KVTTokenizer(BaseTokenizer):
 
     def _event_tokens(self, row: pd.Series) -> list[str]:
         toks = ["[EVT_START]", f"t={self._time.transform(row.get(self.time_field))}"]
+        if self._cal is not None:
+            cal_val = self._calendar([row.get(self.time_col)], self.calendar).iloc[0]
+            toks.append(f"cal={self._cal.transform(cal_val)}")
         toks += [f"{f}={self._num[f].transform(row.get(f))}" for f in self.e_num]
         toks += [f"{f}={self._cat[f].transform(row.get(f))}" for f in self.e_cat]
         toks.append("[EVT_END]")
@@ -136,13 +168,24 @@ class KVTTokenizer(BaseTokenizer):
         nb.edges = np.array(state["edges"]) if state["edges"] is not None else None
         return nb
 
+    @staticmethod
+    def _cat_state(ct: CategoricalTokenizer) -> dict:
+        return {"max_categories": ct.max_categories, "min_count": ct.min_count,
+                "categories_": ct.categories_}
+
+    @staticmethod
+    def _cat_from(s: dict) -> CategoricalTokenizer:
+        ct = CategoricalTokenizer(s["max_categories"], s["min_count"])
+        ct.categories_ = s["categories_"]
+        return ct
+
     def save(self, path) -> None:
         state = {
             "config": self.config,
             "numeric": {f: self._num_state(nb) for f, nb in self._num.items()},
-            "categorical": {f: {"max_categories": ct.max_categories, "min_count": ct.min_count,
-                                "categories_": ct.categories_} for f, ct in self._cat.items()},
+            "categorical": {f: self._cat_state(ct) for f, ct in self._cat.items()},
             "time": self._num_state(self._time),
+            "cal": self._cat_state(self._cal) if self._cal is not None else None,
             "vocab": [self.vocabulary.id_to_token[i] for i in range(self.vocabulary.size)],
         }
         Path(path).write_text(json.dumps(state))
@@ -152,12 +195,9 @@ class KVTTokenizer(BaseTokenizer):
         state = json.loads(Path(path).read_text())
         obj = cls(state["config"])
         obj._num = {f: cls._num_from(s) for f, s in state["numeric"].items()}
-        obj._cat = {}
-        for f, s in state["categorical"].items():
-            ct = CategoricalTokenizer(s["max_categories"], s["min_count"])
-            ct.categories_ = s["categories_"]
-            obj._cat[f] = ct
+        obj._cat = {f: cls._cat_from(s) for f, s in state["categorical"].items()}
         obj._time = cls._num_from(state["time"])
+        obj._cal = cls._cat_from(state["cal"]) if state.get("cal") else None
         vocab = Vocabulary.__new__(Vocabulary)
         vocab.token_to_id = {t: i for i, t in enumerate(state["vocab"])}
         vocab.id_to_token = {i: t for i, t in enumerate(state["vocab"])}

@@ -6,6 +6,10 @@ Produces the *value* part of a KVT token (e.g. the ``4`` in ``original_ltv=4``).
 ``"0"`` = exact zero, ``"1".."n_bins"`` = quantile bins of the non-zero training values,
 ``"NA"`` = missing. Edges are fit on **training data only** (never leak from val/test), and a
 value beyond the training range is clamped into the edge bucket — it can never create a new one.
+
+``anchors`` forces a bin boundary at known thresholds (e.g. LTV 80/90/95/97, DTI 43/45) so
+razor-thin regulatory cliffs aren't blurred inside a quantile bin — the granularity an XGBoost
+baseline gets for free. ``n_bins`` can be raised per high-signal field.
 """
 
 from __future__ import annotations
@@ -17,9 +21,10 @@ import pandas as pd
 class NumericBucketer:
     NA = "NA"
 
-    def __init__(self, n_bins: int = 16):
+    def __init__(self, n_bins: int = 16, anchors=None):
         self.n_bins = n_bins
-        self.edges = None        # quantile edges of non-zero training values
+        self.anchors = list(anchors) if anchors else []   # forced cut-points (e.g. LTV 80)
+        self.edges = None        # bin edges of non-zero training values (quantile + anchors)
         self.n_bins_ = 0         # actual #bins after de-duplicating edges
 
     def fit(self, values) -> 'NumericBucketer':
@@ -29,7 +34,8 @@ class NumericBucketer:
         nz = v[v != 0.0]
         if nz.size >= 2 and np.unique(nz).size >= 2:
             edges = np.quantile(nz, np.linspace(0.0, 1.0, self.n_bins + 1))
-            self.edges = np.unique(edges)               # dedup → strictly increasing
+            anc = [a for a in self.anchors if nz.min() < a < nz.max()]   # only in-range anchors
+            self.edges = np.unique(np.concatenate([edges, anc]))         # force boundary at cliffs
             self.n_bins_ = max(self.edges.size - 1, 1)
         else:                                           # constant / all-zero / all-missing field
             self.edges = None

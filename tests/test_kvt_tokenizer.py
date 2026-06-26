@@ -90,3 +90,24 @@ def test_unseen_value_maps_without_growing_vocab():
     seq = tok.decode(tok.encode(test_loan))
     assert tok.vocab_size == before
     assert "channel=UNK" in seq
+
+
+def test_calendar_token_per_event_and_perfield_bins():
+    cfg = dict(CONFIG, calendar="yearquarter",
+               bins={"original_ltv": 24}, anchors={"original_ltv": [80]})
+    panel = _panel(n_months=5)
+    tok = KVTTokenizer(cfg).fit(panel)
+    seq = tok.decode(tok.encode(panel[panel.loan_id == "L0"]))
+    assert sum(t.startswith("cal=") for t in seq) == 5       # one calendar token per event
+    ltv_tokens = sum(t.startswith("original_ltv=") for t in tok.vocabulary.token_to_id)
+    assert ltv_tokens > tok.n_bins                           # >16: asked for 24 + anchor
+
+
+def test_calendar_survives_save_load(tmp_path):
+    panel = _panel()
+    tok = KVTTokenizer(dict(CONFIG, calendar="yearquarter")).fit(panel)
+    loan = panel[panel.loan_id == "L1"]
+    before = tok.encode(loan)
+    p = tmp_path / "kvt_cal.json"
+    tok.save(p)
+    assert KVTTokenizer.load(p).encode(loan) == before

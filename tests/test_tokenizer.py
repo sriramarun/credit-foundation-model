@@ -83,3 +83,11 @@ def test_fused_token_roundtrip_is_lossless():
     ids = [vocab.encode(t) for t in row_tokens]
     assert [vocab.decode(i) for i in ids] == row_tokens          # 100% lossless roundtrip
     assert vocab.stats()["field_tokens"] == len(nb.vocab()) + len(ct.vocab())
+
+
+def test_numeric_bucketer_anchor_forces_boundary():
+    rng = np.random.default_rng(0)
+    train = pd.Series(rng.uniform(40, 97, 10_000))          # LTV-like
+    nb = NumericBucketer(n_bins=10, anchors=[80, 90]).fit(train)
+    assert any(abs(e - 80.0) < 1e-9 for e in nb.edges)      # 80 is an actual bin edge
+    assert nb.transform(79.9) != nb.transform(80.1)         # the cliff is not blurred
