@@ -13,6 +13,27 @@ n_bins: 16
 max_categories: 256
 max_events: 60          # keep the most recent N monthly snapshots per loan
 
+# Absolute-time / macro-regime token per event (cal=<YYYYQ#>) so the History encoder can tell
+# 2005 from 2008. Real macro series (HPI / prevailing rate / unemployment), once joined into the
+# panel, just go in event.numeric / event.categorical below — same fairness applies to the baseline.
+calendar: yearquarter
+
+# Per-field bin-granularity overrides (default n_bins above) — more resolution for high-signal fields.
+bins:
+  original_ltv: 24
+  original_cltv: 24
+  dti: 24
+  original_interest_rate: 24
+  current_interest_rate: 24
+  borrower_credit_score_at_origination: 24
+  current_classic_fico: 24
+
+# Force a bin boundary exactly at known regulatory cliffs (so 79.9 vs 80.1 isn't blurred).
+anchors:
+  original_ltv: [80, 90, 95, 97]
+  original_cltv: [80, 90, 95, 97]
+  dti: [36, 43, 45]
+
 profile:
   numeric:
     - original_interest_rate
