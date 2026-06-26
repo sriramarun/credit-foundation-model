@@ -45,6 +45,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from credit_fm.utils import storage
+
 # Zero Balance Code -> outcome. Credit events count as default; 01 is a clean prepay.
 ZBC_CREDIT_EVENT = {"02", "03", "09", "15"}  # third-party sale, short sale, REO/DIL, note sale
 ZBC_PREPAY = {"01"}                          # prepaid or matured
@@ -130,35 +132,34 @@ def main() -> None:
     src.add_argument("--gcs-root", help="gs://bucket/fannie_by_reporting (Hive-partitioned)")
     src.add_argument("--local-root", help="local dir holding the Hive-partitioned layout")
     ap.add_argument("--reporting", nargs="+", help="reporting quarters, e.g. 2016Q1 2016Q2")
-    ap.add_argument("--out", default="data/raw/fannie_mae")
+    ap.add_argument("--out", default="data/raw/fannie_mae",
+                    help="panel destination; local path or gs:///s3:// URL")
     ap.add_argument("--combined-name", default="panel.parquet")
     ap.add_argument("--key", default=DEFAULT_KEY, help="GCS service-account JSON")
     args = ap.parse_args()
 
     _maybe_auth(args.key)
     sources = _resolve_sources(args)
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
+    out = args.out.rstrip("/")                          # local path or gs:///s3:// URL
+    storage.ensure_auth(out, args.key)
 
     frames = []
-    for i, s in enumerate(sources):
+    for s in sources:
         print(f"Reading {s} ...")
         df = _derive(pd.read_parquet(s))               # read_parquet handles file or hive dir
-        part = out / f"part_{i:04d}.parquet"
-        df.to_parquet(part, index=False)
         print(f"  {len(df):>10,} rows  {df['loan_id'].nunique():>8,} loans  "
               f"reporting {df['reporting_date'].min()}..{df['reporting_date'].max()}  "
               f"default={df['default_event'].mean():.4%}  performing={df['is_performing'].mean():.1%}")
         frames.append(df)
 
     panel = pd.concat(frames, ignore_index=True)
-    panel.to_parquet(out / args.combined_name, index=False)
-    print(f"\nWrote {out}/{args.combined_name}: {len(panel):,} rows, "
+    panel_path = storage.join(out, args.combined_name)
+    storage.write_parquet(panel, panel_path)            # pluggable: local / gs:// / s3://
+    print(f"\nWrote {panel_path}: {len(panel):,} rows, "
           f"{panel['loan_id'].nunique():,} loans, "
           f"reporting {panel['reporting_date'].min()} -> {panel['reporting_date'].max()}, "
           f"origination {panel['origination_date'].min()} -> {panel['origination_date'].max()}")
-    print(f"Next: scripts/prepare_data.py --input {out}/{args.combined_name} "
-          f"--origination-col origination_date")
+    print(f"Next: scripts/prepare_data.py --input {panel_path} --origination-col origination_date")
 
 
 if __name__ == "__main__":
