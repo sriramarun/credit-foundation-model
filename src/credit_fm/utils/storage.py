@@ -53,11 +53,32 @@ def makedirs(url: str, storage_options: dict[str, Any] | None = None) -> None:
 
 
 def write_parquet(df: pd.DataFrame, url: str, storage_options: dict[str, Any] | None = None) -> None:
-    """Write a DataFrame to ``url`` (local/gs:///s3://), creating the parent prefix first."""
-    ensure_auth(url)
-    parent = url.rsplit("/", 1)[0]
-    makedirs(parent, storage_options)
-    df.to_parquet(url, index=False, storage_options=storage_options)
+    """Write a DataFrame to ``url`` (local/gs:///s3://).
+
+    Streams through the fsspec file handle rather than ``df.to_parquet(url)`` so it works even when
+    this pyarrow build was compiled without native cloud-filesystem (GCS/S3) support.
+    """
+    fs, path = _fs(url, storage_options)
+    parent = path.rsplit("/", 1)[0]
+    if parent and parent != path:
+        fs.makedirs(parent, exist_ok=True)
+    with fs.open(path, "wb") as f:
+        df.to_parquet(f, index=False)
+
+
+def read_parquet(url: str, columns=None, storage_options: dict[str, Any] | None = None) -> pd.DataFrame:
+    """Read parquet — a single file or a partitioned directory — from local/gs:///s3://.
+
+    Uses the fsspec filesystem (gcsfs/s3fs) for IO, so it works when pyarrow lacks native cloud
+    support; pyarrow only parses the bytes.
+    """
+    if "://" not in str(url):
+        return pd.read_parquet(url, columns=columns)        # local: plain path, fastest
+    import pyarrow.dataset as pds
+    from pyarrow.fs import FSSpecHandler, PyFileSystem
+    fs, path = _fs(url, storage_options)
+    dataset = pds.dataset(path, filesystem=PyFileSystem(FSSpecHandler(fs)), format="parquet")
+    return dataset.to_table(columns=columns).to_pandas()
 
 
 def write_text(text: str, url: str, storage_options: dict[str, Any] | None = None) -> None:
