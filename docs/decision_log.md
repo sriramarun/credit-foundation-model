@@ -14,6 +14,8 @@ Running record of locked decisions. Each entry: decision, rationale, status.
 | DL-008 | Tokenizer vocab + numeric bins fit on `train` only | locked |
 | DL-009 | W&B hosted vs offline/self-hosted | **open** (resolve before pretraining) |
 | DL-010 | Field selection: drop 11 constant + 16 redundant/derived | locked |
+| DL-011 | Per-event calendar/macro-regime token `cal=<YYYYQ#>` | locked |
+| DL-012 | Threshold-anchored + per-field numeric bins | locked |
 
 ## DL-007 — Loan-stratified temporal split
 **Decision.** Split by `loan_id` (every cutoff of a loan stays in one split), ordered by
@@ -57,3 +59,19 @@ Final feature set = **42** (29 static → Profile encoder, 13 dynamic → Event 
 
 **Data anomaly (flag to data team):** `guarantee_type` is spec'd as `{NHG, None}` but the file
 has 1 value + 62.8% null; it equals `nhg_flag` and is dropped (no info lost).
+
+## DL-011 — Calendar / macro-regime token
+Each event block carries an absolute-time token `cal=<YYYYQ#>` (config `calendar: yearquarter`)
+alongside the relative `t=<loan_age bin>`. Loan-internal tokens are regime-blind: 2005 and 2008
+look identical, yet default behaviour is dominated by the macro cycle. The calendar token lets the
+History encoder condition on the era; real macro series (HPI / prevailing rate / unemployment) will
+later enter as ordinary `event` fields. **Fairness:** give the OOT baseline the same calendar/macro
+features, or an FM win isn't apples-to-apples. (Reviewer #2.)
+
+## DL-012 — Threshold-anchored + per-field numeric bins
+Numeric fields default to 16 quantile bins, with two overrides: `bins:` raises resolution for
+high-signal fields (LTV/CLTV/DTI/FICO/rate → 24), and `anchors:` forces a bin boundary exactly at
+regulatory cliffs (LTV 80/90/95/97, DTI 36/43/45) so a hard underwriting threshold is never blurred
+inside one bucket. Edges are still fit on `train` only (DL-008); anchors are merged into the
+quantile edges. (Reviewer #1.) Reviewer #3 (downstream class imbalance) and #4 (length-bucketed
+batching) are deferred to Phases E and D respectively.
