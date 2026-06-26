@@ -7,13 +7,12 @@ Source (GCS bucket ``sriram-credit-fm-data``) is **Hive-partitioned by reporting
     fannie_by_reporting/reporting_year=<YYYY>/reporting_quarter=<Q#>/from_<acqQ>_*.parquet
 
 i.e. partitioned by the *observation* quarter; within each partition, files are sharded by
-acquisition cohort (``from_2000Q1`` = loans originated ~2000Q1). One file therefore holds the
-monthly rows (3 per loan) for one (reporting-quarter, cohort) slice. The published schema is the
+acquisition cohort (``from_2000Q1`` = loans originated ~2000Q1). The published schema is the
 113-field Fannie layout with snake_case names (``loan_identifier``, ``monthly_reporting_period``,
 ``origination_date``, ``current_loan_delinquency_status``, ``zero_balance_code``, ...).
 
-This reads a chosen set of slices, derives the modelling columns the generic pipeline needs, and
-writes ``<out>/panel.parquet`` (the combined panel the dev pipeline reads) plus per-source parts.
+Reads a chosen set of slices (in parallel), derives the modelling columns the generic pipeline
+needs, optionally loan-samples, and writes ``<out>/panel.parquet`` (local / gs:// / s3://).
 
 Derived columns (so ``prepare_data.py`` / ``train_baseline.py`` stay asset-generic):
   * ``loan_id``           renamed from ``loan_identifier``
@@ -26,21 +25,24 @@ Derived columns (so ``prepare_data.py`` / ``train_baseline.py`` stay asset-gener
 
 Examples
 --------
-Dev sample from explicit local files (the two placed in data/raw):
-    python scripts/ingest_fannie_mae.py --files \
-        data/raw/fannie_by_reporting_reporting_year=2016_reporting_quarter=Q1_from_2000Q1_0.parquet \
-        data/raw/fannie_by_reporting_reporting_year=2016_reporting_quarter=Q1_from_2002Q1_0.parquet
+One cohort across a reporting window (fast; real multi-month sequences for the tokenizer):
+    python -u scripts/ingest_fannie_mae.py --files \
+        gs://.../reporting_year=2016/reporting_quarter=Q1/from_2014Q1_0.parquet \
+        gs://.../reporting_year=2016/reporting_quarter=Q2/from_2014Q1_0.parquet \
+        --out gs://sriram-credit-fm-data/output/raw/fannie_mae
 
-Hive read from GCS (a span of reporting quarters — needed for a real forward-horizon baseline):
-    python scripts/ingest_fannie_mae.py \
+Full hive span (parallel reads + loan sample):
+    python -u scripts/ingest_fannie_mae.py \
         --gcs-root gs://sriram-credit-fm-data/fannie_by_reporting \
-        --reporting 2016Q1 2016Q2 2016Q3 2016Q4 2017Q1 2017Q2 2017Q3 2017Q4
+        --reporting 2016Q1 2016Q2 2016Q3 2016Q4 2017Q1 2017Q2 2017Q3 2017Q4 \
+        --workers 8 --sample-pct 10 --out gs://sriram-credit-fm-data/output/raw/fannie_mae
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pandas as pd
@@ -135,6 +137,10 @@ def main() -> None:
     ap.add_argument("--out", default="data/raw/fannie_mae",
                     help="panel destination; local path or gs:///s3:// URL")
     ap.add_argument("--combined-name", default="panel.parquet")
+    ap.add_argument("--sample-pct", type=int, default=100,
+                    help="keep ~N%% of loans (hash on loan_id); a small sample is plenty for the tokenizer")
+    ap.add_argument("--workers", type=int, default=4,
+                    help="parallel source reads (threads; gcsfs/pyarrow release the GIL during IO)")
     ap.add_argument("--key", default=DEFAULT_KEY, help="GCS service-account JSON")
     args = ap.parse_args()
 
@@ -143,15 +149,18 @@ def main() -> None:
     out = args.out.rstrip("/")                          # local path or gs:///s3:// URL
     storage.ensure_auth(out, args.key)
 
-    frames = []
-    for s in sources:
-        print(f"Reading {s} ...")
-        df = _derive(storage.read_parquet(s))               # read_parquet handles file or hive dir
-        print(f"  {len(df):>10,} rows  {df['loan_id'].nunique():>8,} loans  "
-              f"reporting {df['reporting_date'].min()}..{df['reporting_date'].max()}  "
-              f"default={df['default_event'].mean():.4%}  performing={df['is_performing'].mean():.1%}")
-        frames.append(df)
+    def _read_source(s: str) -> pd.DataFrame:
+        df = _derive(storage.read_parquet(s))          # fsspec read: file or hive dir, local/gs://
+        if args.sample_pct < 100:
+            keep = pd.util.hash_pandas_object(df["loan_id"], index=False) % 100 < args.sample_pct
+            df = df[keep]
+        print(f"  done {s}: {len(df):>10,} rows  {df['loan_id'].nunique():>8,} loans  "
+              f"reporting {df['reporting_date'].min()}..{df['reporting_date'].max()}", flush=True)
+        return df
 
+    print(f"Reading {len(sources)} source(s) with {args.workers} parallel workers ...", flush=True)
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+        frames = list(ex.map(_read_source, sources))   # order preserved
     panel = pd.concat(frames, ignore_index=True)
     panel_path = storage.join(out, args.combined_name)
     storage.write_parquet(panel, panel_path)            # pluggable: local / gs:// / s3://
