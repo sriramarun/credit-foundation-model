@@ -146,7 +146,7 @@ def main() -> None:
     frames = []
     for s in sources:
         print(f"Reading {s} ...")
-        df = _derive(pd.read_parquet(s))               # read_parquet handles file or hive dir
+        df = _derive(storage.read_parquet(s))               # read_parquet handles file or hive dir
         print(f"  {len(df):>10,} rows  {df['loan_id'].nunique():>8,} loans  "
               f"reporting {df['reporting_date'].min()}..{df['reporting_date'].max()}  "
               f"default={df['default_event'].mean():.4%}  performing={df['is_performing'].mean():.1%}")

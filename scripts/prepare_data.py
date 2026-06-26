@@ -96,7 +96,7 @@ def main() -> None:
     storage.ensure_auth(out, args.key)
 
     print(f"Loading {in_path} ...")
-    panel = pd.read_parquet(in_path)
+    panel = storage.read_parquet(in_path)
     if args.id_col not in panel.columns:
         raise SystemExit(f"Column '{args.id_col}' not in panel. Available: {list(panel.columns)}")
 

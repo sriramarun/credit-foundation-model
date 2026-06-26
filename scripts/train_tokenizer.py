@@ -22,7 +22,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import yaml
 
 from credit_fm.tokenizer import KVTTokenizer
@@ -58,7 +57,7 @@ def main() -> None:
     cfg = yaml.safe_load(open(args.config))
     storage.ensure_auth(args.train, args.key)
     print(f"Loading {args.train} ...")
-    panel = pd.read_parquet(args.train)
+    panel = storage.read_parquet(args.train)
 
     dropped = _prune_to_panel(cfg, panel.columns)
     if dropped:
