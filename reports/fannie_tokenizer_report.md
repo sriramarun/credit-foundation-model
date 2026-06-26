@@ -4,17 +4,17 @@ Fitted on `gs://sriram-credit-fm-data/output/processed/fannie_mae/run_2016_2017/
 
 ## Vocabulary
 
-- **394 tokens** (9 special + field value tokens).
+- **440 tokens** (9 special + field value tokens).
 - **Profile** 31 fields (16 numeric / 15 categorical); **Event** 12 fields (11 numeric / 1 categorical); time field `loan_age`.
 
 ## Sequence length (QA sample: 2,000 loans)
 
 | stat | tokens / loan |
 |---|--:|
-| min | 49 |
-| median | 394 |
-| p95 | 394 |
-| max | 394 |
+| min | 50 |
+| median | 418 |
+| p95 | 418 |
+| max | 418 |
 
 ## Token health
 
@@ -22,7 +22,7 @@ Fitted on `gs://sriram-credit-fm-data/output/processed/fannie_mae/run_2016_2017/
 |---|--:|
 | roundtrip lossless | 100.0% of loans |
 | unseen-category tokens (`=UNK`) | 0.00% |
-| missing tokens (`=NA`) | 50.84% |
+| missing tokens (`=NA`) | 47.96% |
 
 ## Notes
 - Bins/categories fit on TRAIN only; unseen values map to `=UNK`, missing to `=NA`.
