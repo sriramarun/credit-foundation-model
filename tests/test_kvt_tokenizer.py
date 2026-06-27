@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from credit_fm.tokenizer import KVTTokenizer
+from credit_fm.tokenizer.vocabulary import SPECIAL_TOKENS
 
 CONFIG = {
     "id_col": "loan_id",
@@ -111,3 +112,32 @@ def test_calendar_survives_save_load(tmp_path):
     p = tmp_path / "kvt_cal.json"
     tok.save(p)
     assert KVTTokenizer.load(p).encode(loan) == before
+
+
+def test_encode_with_meta_aligns_branches_events_and_types():
+    cfg = dict(CONFIG, calendar="yearquarter")
+    panel = _panel(n_loans=4, n_months=5)
+    tok = KVTTokenizer(cfg).fit(panel)
+    loan = panel[panel.loan_id == "L0"]
+    toks = tok.tokens(loan)
+    meta = tok.encode_with_meta(loan)
+    n = len(toks)
+    assert all(len(meta[k]) == n for k in ("input_ids", "event_index", "field_type", "branch"))
+    assert meta["input_ids"] == tok.encode(loan)                  # ids match plain encode()
+    ev = np.array(meta["event_index"])
+    br = np.array(meta["branch"])
+    ft = np.array(meta["field_type"])
+    assert sorted(set(ev[ev >= 0].tolist())) == [0, 1, 2, 3, 4]   # one index per monthly block
+    # branch routing: profile field tokens -> 0 (event -1); event field tokens -> 1 (event >=0)
+    prof = [i for i, t in enumerate(toks) if t.startswith("original_ltv=")]
+    evt = [i for i, t in enumerate(toks) if t.startswith("current_interest_rate=")]
+    assert (br[prof] == 0).all() and (ev[prof] == -1).all()
+    assert (br[evt] == 1).all() and (ev[evt] >= 0).all()
+    # structural specials carry branch/field_type -1
+    for i, t in enumerate(toks):
+        if t in SPECIAL_TOKENS:
+            assert br[i] == -1 and ft[i] == -1
+    # field_type is stable across events: all cal= share one id, all t= share another (distinct)
+    cal_ids = {ft[i] for i, t in enumerate(toks) if t.startswith("cal=")}
+    t_ids = {ft[i] for i, t in enumerate(toks) if t.startswith("t=")}
+    assert len(cal_ids) == 1 and len(t_ids) == 1 and cal_ids != t_ids

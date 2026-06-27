@@ -35,7 +35,7 @@ import pandas as pd
 from .base import BaseTokenizer
 from .categorical import CategoricalTokenizer
 from .numeric_bucketer import NumericBucketer
-from .vocabulary import Vocabulary
+from .vocabulary import SPECIAL_TOKENS, Vocabulary
 
 
 class KVTTokenizer(BaseTokenizer):
@@ -150,6 +150,52 @@ class KVTTokenizer(BaseTokenizer):
 
     def decode(self, tokens: list[int]) -> list[str]:
         return [self.vocabulary.decode(i) for i in tokens]
+
+    @property
+    def field_types(self) -> dict[str, int]:
+        """Stable id per field *key* (profile/event fields + ``t``/``cal``) for type-level masking.
+
+        Keys are the part before ``=`` in a fused token (e.g. ``original_ltv``, ``t``, ``cal``).
+        Structural specials have no ``=`` and map to ``-1`` at encode time.
+        """
+        keys = list(self.p_num) + list(self.p_cat) + list(self.e_num) + list(self.e_cat) + ["t"]
+        if self.calendar != "none":
+            keys.append("cal")
+        return {k: i for i, k in enumerate(keys)}
+
+    def encode_with_meta(self, loan_panel: pd.DataFrame) -> dict[str, list[int]]:
+        """Encode one loan to ids **plus** the per-token metadata the model + masking need.
+
+        Returns four equal-length lists, aligned with :meth:`tokens`:
+
+        * ``input_ids``   — vocabulary ids.
+        * ``event_index`` — 0-based month for every token inside an ``[EVT_START]…[EVT_END]`` block
+          (markers included); ``-1`` for ``[BOS]``/``[USR]``/profile/``[EOS]``.
+        * ``field_type``  — :attr:`field_types` id per fused token; ``-1`` for structural specials.
+        * ``branch``      — ``0`` profile, ``1`` event, ``-1`` structural — routes tokens to branches.
+        """
+        if self.vocabulary is None:
+            raise RuntimeError("tokenizer not fitted — call fit(train_panel) first")
+        ftypes = self.field_types
+        input_ids, event_index, field_type, branch = [], [], [], []
+        cur_event, in_event = -1, False
+        for t in self.tokens(loan_panel):
+            if t == "[EVT_START]":
+                cur_event, in_event = cur_event + 1, True
+                ev, ft, br = cur_event, -1, -1
+            elif t == "[EVT_END]":
+                ev, ft, br, in_event = cur_event, -1, -1, False
+            elif t in SPECIAL_TOKENS:                 # [BOS] / [USR] / [EOS]
+                ev, ft, br = -1, -1, -1
+            else:                                     # a fused field=value token
+                ft = ftypes.get(t.split("=", 1)[0], -1)
+                ev, br = (cur_event, 1) if in_event else (-1, 0)
+            input_ids.append(self.vocabulary.encode(t))
+            event_index.append(ev)
+            field_type.append(ft)
+            branch.append(br)
+        return {"input_ids": input_ids, "event_index": event_index,
+                "field_type": field_type, "branch": branch}
 
     @property
     def vocab_size(self) -> int:
