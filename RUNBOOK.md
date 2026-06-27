@@ -1,43 +1,87 @@
 # Runbook — Running the Pipeline
 
-How to run what's built today, end to end. Stubbed stages (pretrain, embeddings, downstream)
-are marked TODO and will be added as they land. See `CLAUDE.md` for project context.
+End-to-end steps for what's built today. Stages not yet implemented are marked **TODO**. The
+**primary corpus is Fannie Mae**; the Dutch synthetic panel is the validation set. See
+`docs/architecture.md` for how the pieces fit and `CLAUDE.md` for project context.
 
 ## 0. Environment (H100 container)
 ```bash
-bash scripts/setup_container.sh          # restart-proof venv + install + git; see docs/container_setup.md
-Secrets (WANDB_API_KEY, HF_TOKEN) in /workspace/secrets.env (never committed).
+bash scripts/setup_container.sh     # restart-proof venv + install + git (docs/container_setup.md)
+```
+Secrets (`WANDB_API_KEY`, `HF_TOKEN`) and the GCS key live in `/workspace/secrets.env` and
+`/workspace/.gcloud/credit-fm-sa.json` — never committed. Storage is pluggable: every path may be
+a local path or a `gs://` / `s3://` URL.
 
-1. Data → data/raw/ (gitignored)
-all_cutoffs.parquet — the ESMA panel (HF Algoritmica/green-lion-2024-2025 / deeploans generator).
-loan_book.parquet — eval-only latents (_segment); use the generator run whose _segment
-predicts this panel's defaults (verify via a segment-conditional default rate).
-2. Split (generic)
-python scripts/prepare_data.py --input data/raw/all_cutoffs.parquet
-# → data/processed/{train,val,test}.parquet + splits.csv + splits.meta.json
-Schema-agnostic: --id-col, --origination-col (or derive via --reporting-col/--seasoning-col).
+## 1. Data
+- **Fannie Mae (primary):** ingested to GCS via the `fannie-mae-etl` repo →
+  `scripts/ingest_fannie_mae.py` writes a per-loan monthly panel with derived `origination_date`,
+  `reporting_date`, `default_event`, `is_performing`. See `docs/data/fannie_mae.md`.
+- **Dutch (validation):** `data/raw/all_cutoffs.parquet` (ESMA Annex 2). `loan_book.parquet`
+  carries eval-only latents (`_segment`) — **never a feature**.
 
-3. Tokenizer config (generic)
-python scripts/classify_schema.py --input data/processed/train.parquet \
-  --out configs/dutch_mortgages/tokenizer.yaml \
-  --drop interest_only_flag,self_employed_flag,property_usage,buy_to_let_flag,days_past_due,primary_energy_demand_kwh_m2,construction_year_bucket
-# → 42-feature config (drop_constant + drop_redundant + profile/event)
-4. Baseline + Gate G1 + ceiling (config-driven)
+## 2. Split (loan-stratified, temporal — DL-007)
+```bash
+python scripts/prepare_data.py --input <panel.parquet> --origination-col origination_date
+# → processed/{train,val,test}.parquet + splits.csv + splits.meta.json
+```
+Schema-agnostic via `--id-col` / `--origination-col` (or derive with `--reporting-col`/`--seasoning-col`).
+
+## 3. Tokenizer config (generated, not hand-edited)
+```bash
+python scripts/classify_schema.py --input processed/train.parquet \
+  --out configs/<asset>/tokenizer.yaml
+# → profile/event field roles; drops constant + redundant columns
+```
+
+## 4. Fit the tokenizer  ✅ M1
+```bash
+python scripts/train_tokenizer.py \
+  --config configs/fannie_mae/tokenizer.yaml \
+  --train  gs://sriram-credit-fm-data/output/processed/fannie_mae/run_2016_2017/train.parquet \
+  --out    configs/fannie_mae/tokenizer.json \
+  --report reports/fannie_tokenizer_report.md
+# → frozen vocab (Fannie: 440 tokens) + QA report (roundtrip, OOV, length). Fit on TRAIN only.
+```
+
+## 5. Encode shards (encode-once)  ✅ M2
+```bash
+python scripts/encode_dataset.py \
+  --tokenizer configs/fannie_mae/tokenizer.json \
+  --in   gs://.../output/processed/fannie_mae/run_2016_2017/train.parquet \
+  --out  gs://.../output/encoded/fannie_mae/run_2016_2017/train --shard-size 50000
+# repeat for val/test → shard-*.parquet + manifest.json (token-id contract for the model)
+```
+In code, the data layer is then:
+```python
+from credit_fm.data import CreditDataModule
+dm = CreditDataModule(train_dir, val_dir=val_dir, batch_size=64, limit=1000)  # limit = toy run
+batch = next(iter(dm.train_dataloader()))   # {input_ids, attention_mask, labels, event_index, ...}
+```
+
+## 6. Baselines — the honest bar for the FM
+```bash
+# Fannie out-of-time (OOT) — the real bar
+python scripts/build_oot_baseline.py --train-years 2000-2006 --test-years 2008-2010 \
+  --sample-pct 20 --report reports/fannie_oot_crisis.md     # crisis stress: ROC 0.757 / PR 0.024
+python scripts/build_oot_baseline.py --train-years 2000-2022 --test-years 2023-2025 \
+  --sample-pct 20 --report reports/fannie_oot_recent.md     # recent OOT (run via nohup)
+
+# Dutch single-cutoff baseline + Gate G1 + hidden-segment ceiling
 python scripts/train_baseline.py --config configs/dutch_mortgages/baseline.yaml \
-  --book data/raw/loan_book.parquet --report reports/baseline_report.md
-# → 4-config table (Gate G1 = ROC 0.73 / PR-AUC 0.046) + hidden-segment ceiling (34×, +95%)
-Verify
-ruff check . && pytest -q
-# optional: run notebooks/00_smoke_test_splits.ipynb
-New asset class
-Generic split + classify work as-is. Write configs/<asset>/baseline.yaml
-(id/time/label/horizon/gate/leakage/segment) — no code change to train_baseline.py.
+  --book data/raw/loan_book.parquet --report reports/baseline_report.md   # Gate G1 = ROC 0.73
+```
 
-Not built yet (TODO — added as stages land)
-scripts/train_tokenizer.py — fit the KVT tokenizer (Milestone M1)
-scripts/pretrain.py — pretrain the 3-branch model on 8× H100 (M3)
-scripts/extract_embeddings.py — embeddings from a checkpoint
-scripts/evaluate_downstream.py — embeddings vs baseline (the FM-vs-0.73 test)
-5. Fannie out-of-time (OOT) baseline  ← the honest bar for the FM
-python scripts/build_oot_baseline.py --train-years 2000-2006 --test-years 2008-2010 --sample-pct 20 --report reports/fannie_oot_crisis.md   # crisis stress test
-python scripts/build_oot_baseline.py --train-years 2000-2022 --test-years 2023-2025 --sample-pct 20 --report reports/fannie_oot_recent.md   # recent OOT (run via nohup — see reference_implementations/fannie_mae/README.md)
+## Verify
+```bash
+ruff check . && pytest -q
+```
+
+## New asset class
+Generic split + classify work as-is. Write `configs/<asset>/{baseline,tokenizer}.yaml`, then run
+steps 2–5 — no code change.
+
+## Not built yet (TODO — land as stages complete)
+- `models/` hierarchical three-branch encoder (M2 Brick 2)
+- `scripts/pretrain.py` — pretrain the 30M model on 8× H100 (M3)
+- `scripts/extract_embeddings.py` — `[USR]` embeddings from a checkpoint (E)
+- `scripts/evaluate_downstream.py` — FM embeddings vs the OOT baseline (the FM-vs-0.757 test)
