@@ -3,6 +3,7 @@
 """Pretraining pipeline.
 """
 
+from .masking import IGNORE_INDEX, mask_tokens
 from .trainer import CreditTrainer
 
-__all__ = ['CreditTrainer']
+__all__ = ['CreditTrainer', 'mask_tokens', 'IGNORE_INDEX']
