@@ -47,15 +47,21 @@ def _evaluate(model, datamodule, device: str, use_amp: bool) -> float:
 def train_mlm(model, datamodule, *, steps: int = 100, lr: float = 3e-4, weight_decay: float = 0.01,
               warmup: int = 10, grad_clip: float = 1.0, min_lr_ratio: float = 0.1,
               device: str | None = None, bf16: bool = False, log_every: int = 10,
-              val_every: int = 0, log: Callable[[str], None] = print) -> dict:
-    """Train ``model`` for ``steps`` optimiser steps on ``datamodule``; return a loss history."""
+              val_every: int = 0, restore_best: bool = True,
+              log: Callable[[str], None] = print) -> dict:
+    """Train ``model`` for ``steps`` optimiser steps on ``datamodule``; return a loss history.
+
+    When validating, tracks the best (lowest) val loss; if ``restore_best`` the model is rolled
+    back to that checkpoint at the end. History carries ``best_val``/``best_step``.
+    """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = bf16 and device.startswith("cuda")
     model.to(device).train()
     opt = build_optimizer(model, lr=lr, weight_decay=weight_decay)
     sched = build_scheduler(opt, warmup_steps=warmup, total_steps=steps, min_lr_ratio=min_lr_ratio)
 
-    history: dict = {"train": [], "val": []}
+    history: dict = {"train": [], "val": [], "best_val": None, "best_step": None}
+    best_val, best_step, best_state = float("inf"), None, None
     batches = _cycle(datamodule.train_dataloader())
     for step in range(1, steps + 1):
         batch = _to_device(next(batches), device)
@@ -74,7 +80,18 @@ def train_mlm(model, datamodule, *, steps: int = 100, lr: float = 3e-4, weight_d
         if val_every and datamodule.val is not None and step % val_every == 0:
             v = _evaluate(model, datamodule, device, use_amp)
             history["val"].append((step, v))
-            log(f"  [val] step {step}  loss {v:.4f}")
+            star = ""
+            if v < best_val:
+                best_val, best_step = v, step
+                best_state = {k: t.detach().to("cpu").clone() for k, t in model.state_dict().items()}
+                star = "  *best"
+            log(f"  [val] step {step}  loss {v:.4f}{star}")
+
+    if best_state is not None:
+        history["best_val"], history["best_step"] = best_val, best_step
+        if restore_best:
+            model.load_state_dict(best_state)
+            log(f"restored best checkpoint: val {best_val:.4f} @ step {best_step}")
     return history
 
 

@@ -22,11 +22,12 @@ from .base import TransformerEncoder, padding_additive_mask
 
 
 class HistoryEncoder(nn.Module):
-    def __init__(self, dim: int = 256, n_layers: int = 6, n_heads: int = 8, mlp_mult: int = 4):
+    def __init__(self, dim: int = 256, n_layers: int = 6, n_heads: int = 8, mlp_mult: int = 4,
+                 dropout: float = 0.0):
         super().__init__()
         self.loan_token = nn.Parameter(torch.zeros(1, 1, dim))
         nn.init.normal_(self.loan_token, std=0.02)
-        self.encoder = TransformerEncoder(n_layers, dim, n_heads, mlp_mult)
+        self.encoder = TransformerEncoder(n_layers, dim, n_heads, mlp_mult, dropout=dropout)
 
     def forward(self, profile_vec: torch.Tensor, event_vecs: torch.Tensor,
                 event_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:

@@ -48,6 +48,16 @@ def test_encoder_forward_and_backward():
     assert torch.isfinite(x.grad).all()
 
 
+def test_dropout_active_in_train_inert_in_eval():
+    torch.manual_seed(0)
+    enc = TransformerEncoder(n_layers=2, dim=16, n_heads=2, dropout=0.5)
+    x = torch.randn(2, 6, 16)
+    enc.train()
+    assert not torch.allclose(enc(x), enc(x))      # dropout randomises across train forwards
+    enc.eval()
+    assert torch.allclose(enc(x), enc(x))          # deterministic in eval (clean val loss)
+
+
 def test_embeddings_handle_minus_one_metadata():
     emb = Embeddings(vocab_size=20, dim=16, n_field_types=5)
     input_ids = torch.randint(0, 20, (2, 6))

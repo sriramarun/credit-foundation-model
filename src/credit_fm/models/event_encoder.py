@@ -18,9 +18,10 @@ from .base import TransformerEncoder, event_block_additive_mask
 
 
 class EventEncoder(nn.Module):
-    def __init__(self, dim: int = 256, n_layers: int = 5, n_heads: int = 8, mlp_mult: int = 4):
+    def __init__(self, dim: int = 256, n_layers: int = 5, n_heads: int = 8, mlp_mult: int = 4,
+                 dropout: float = 0.0):
         super().__init__()
-        self.encoder = TransformerEncoder(n_layers, dim, n_heads, mlp_mult)
+        self.encoder = TransformerEncoder(n_layers, dim, n_heads, mlp_mult, dropout=dropout)
 
     def forward(self, hidden: torch.Tensor, event_index: torch.Tensor,
                 n_events: int | None = None, return_tokens: bool = False):
