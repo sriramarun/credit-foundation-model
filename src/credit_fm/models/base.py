@@ -14,6 +14,9 @@ A small, self-contained block library used by every branch (Profile / Event / Hi
   ``-1`` metadata is mapped to a dedicated row, never an invalid index).
 * mask helpers: :func:`padding_additive_mask`, :func:`event_block_additive_mask`.
 
+All blocks take a ``dropout`` (default ``0.0``); set it > 0 for regularisation during pretraining
+(it's a no-op in ``eval()``, so validation loss is clean).
+
 ``BaseEncoder`` is the legacy scaffold interface, kept only so the not-yet-rebuilt
 profile/history scaffolds still import; new code uses :class:`TransformerEncoder`.
 """
@@ -63,7 +66,7 @@ def apply_rope(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.T
 
 
 class MultiHeadSelfAttention(nn.Module):
-    def __init__(self, dim: int, n_heads: int, rope_base: float = 10_000.0):
+    def __init__(self, dim: int, n_heads: int, rope_base: float = 10_000.0, dropout: float = 0.0):
         super().__init__()
         if dim % n_heads or (dim // n_heads) % 2:
             raise ValueError(f"dim {dim} must divide by n_heads {n_heads} into an even head_dim")
@@ -72,6 +75,8 @@ class MultiHeadSelfAttention(nn.Module):
         self.rope_base = rope_base
         self.qkv = nn.Linear(dim, 3 * dim, bias=False)
         self.proj = nn.Linear(dim, dim, bias=False)
+        self.attn_drop = nn.Dropout(dropout)
+        self.resid_drop = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor | None = None) -> torch.Tensor:
         bsz, length, dim = x.shape
@@ -82,31 +87,33 @@ class MultiHeadSelfAttention(nn.Module):
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
         if attn_mask is not None:
             scores = scores + attn_mask                   # additive (B,1,L,L), broadcast over heads
-        attn = scores.softmax(dim=-1)
+        attn = self.attn_drop(scores.softmax(dim=-1))
         out = torch.matmul(attn, v).transpose(1, 2).contiguous().view(bsz, length, dim)
-        return self.proj(out)
+        return self.resid_drop(self.proj(out))
 
 
 class SwiGLU(nn.Module):
-    def __init__(self, dim: int, mult: int = 4):
+    def __init__(self, dim: int, mult: int = 4, dropout: float = 0.0):
         super().__init__()
         hidden = int(mult * dim * 2 / 3)
         hidden = (hidden + 7) // 8 * 8                    # round to a multiple of 8
         self.w_gate = nn.Linear(dim, hidden, bias=False)
         self.w_up = nn.Linear(dim, hidden, bias=False)
         self.w_down = nn.Linear(hidden, dim, bias=False)
+        self.drop = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.w_down(F.silu(self.w_gate(x)) * self.w_up(x))
+        return self.drop(self.w_down(F.silu(self.w_gate(x)) * self.w_up(x)))
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, dim: int, n_heads: int, mlp_mult: int = 4, rope_base: float = 10_000.0):
+    def __init__(self, dim: int, n_heads: int, mlp_mult: int = 4, rope_base: float = 10_000.0,
+                 dropout: float = 0.0):
         super().__init__()
         self.norm1 = RMSNorm(dim)
-        self.attn = MultiHeadSelfAttention(dim, n_heads, rope_base)
+        self.attn = MultiHeadSelfAttention(dim, n_heads, rope_base, dropout)
         self.norm2 = RMSNorm(dim)
-        self.mlp = SwiGLU(dim, mlp_mult)
+        self.mlp = SwiGLU(dim, mlp_mult, dropout)
 
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor | None = None) -> torch.Tensor:
         x = x + self.attn(self.norm1(x), attn_mask)
@@ -118,10 +125,10 @@ class TransformerEncoder(nn.Module):
     """Pre-norm residual stack of ``n_layers`` blocks; final RMSNorm."""
 
     def __init__(self, n_layers: int, dim: int, n_heads: int, mlp_mult: int = 4,
-                 rope_base: float = 10_000.0):
+                 rope_base: float = 10_000.0, dropout: float = 0.0):
         super().__init__()
         self.layers = nn.ModuleList(
-            [TransformerBlock(dim, n_heads, mlp_mult, rope_base) for _ in range(n_layers)])
+            [TransformerBlock(dim, n_heads, mlp_mult, rope_base, dropout) for _ in range(n_layers)])
         self.norm = RMSNorm(dim)
 
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor | None = None) -> torch.Tensor:
@@ -137,17 +144,19 @@ class Embeddings(nn.Module):
     ``{-1, 0, 1}`` maps to ``{0, 1, 2}``.
     """
 
-    def __init__(self, vocab_size: int, dim: int, n_field_types: int, pad_id: int = 0):
+    def __init__(self, vocab_size: int, dim: int, n_field_types: int, pad_id: int = 0,
+                 dropout: float = 0.0):
         super().__init__()
         self.n_field_types = n_field_types
         self.token = nn.Embedding(vocab_size, dim, padding_idx=pad_id)
         self.field = nn.Embedding(n_field_types + 1, dim)    # last row = "none" (-1)
         self.branch = nn.Embedding(3, dim)                   # -1/0/1 -> 0/1/2
+        self.drop = nn.Dropout(dropout)
 
     def forward(self, input_ids, field_type, branch) -> torch.Tensor:
         field = torch.where(field_type >= 0, field_type,
                             torch.full_like(field_type, self.n_field_types))
-        return self.token(input_ids) + self.field(field) + self.branch(branch + 1)
+        return self.drop(self.token(input_ids) + self.field(field) + self.branch(branch + 1))
 
 
 def padding_additive_mask(attention_mask: torch.Tensor) -> torch.Tensor:

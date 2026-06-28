@@ -47,6 +47,7 @@ def main() -> None:
     ap.add_argument("--profile-layers", type=int, default=3)
     ap.add_argument("--event-layers", type=int, default=5)
     ap.add_argument("--history-layers", type=int, default=6)
+    ap.add_argument("--dropout", type=float, default=0.1, help="regularisation; 0 to disable")
     # optim
     ap.add_argument("--steps", type=int, default=100)
     ap.add_argument("--lr", type=float, default=3e-4)
@@ -76,8 +77,9 @@ def main() -> None:
     model = CreditFoundationModel(
         vocab_size, n_field_types, dim=args.dim, n_heads=args.heads,
         profile_layers=args.profile_layers, event_layers=args.event_layers,
-        history_layers=args.history_layers)
-    print(f"model: {model.num_parameters()/1e6:.1f}M params (dim={args.dim})", flush=True)
+        history_layers=args.history_layers, dropout=args.dropout)
+    print(f"model: {model.num_parameters()/1e6:.1f}M params (dim={args.dim}, dropout={args.dropout})",
+          flush=True)
 
     history = train_mlm(
         model, dm, steps=args.steps, lr=args.lr, weight_decay=args.weight_decay,
@@ -85,7 +87,10 @@ def main() -> None:
         log_every=args.log_every, val_every=args.val_every)
 
     first, last = history["train"][0], history["train"][-1]
-    print(f"done: train loss {first:.4f} -> {last:.4f} over {args.steps} steps", flush=True)
+    msg = f"done: train loss {first:.4f} -> {last:.4f} over {args.steps} steps"
+    if history["best_val"] is not None:
+        msg += f"  | best val {history['best_val']:.4f} @ step {history['best_step']}"
+    print(msg, flush=True)
 
     if args.out:
         ckpt = {

@@ -84,3 +84,6 @@ def test_train_mlm_reduces_loss_and_logs_val(tmp_path):
     # windowed means (single-step loss is noisy across shuffled batches) + the val trend
     assert np.mean(history["train"][-10:]) < np.mean(history["train"][:10])
     assert len(history["val"]) == 2 and history["val"][-1][1] < history["val"][0][1]
+    # best-val tracking: records the lowest val loss seen
+    assert history["best_val"] == min(v for _, v in history["val"])
+    assert history["best_step"] in {s for s, _ in history["val"]}

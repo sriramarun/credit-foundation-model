@@ -43,13 +43,13 @@ class CreditFoundationModel(nn.Module):
 
     def __init__(self, vocab_size: int, n_field_types: int, dim: int = 384, n_heads: int = 8,
                  profile_layers: int = 3, event_layers: int = 5, history_layers: int = 6,
-                 mlp_mult: int = 4, n_classes: int = 2, pad_id: int = 0):
+                 mlp_mult: int = 4, n_classes: int = 2, pad_id: int = 0, dropout: float = 0.0):
         super().__init__()
         self.dim = dim
-        self.embeddings = Embeddings(vocab_size, dim, n_field_types, pad_id)
-        self.profile_encoder = ProfileStateEncoder(dim, profile_layers, n_heads, mlp_mult)
-        self.event_encoder = EventEncoder(dim, event_layers, n_heads, mlp_mult)
-        self.history_encoder = HistoryEncoder(dim, history_layers, n_heads, mlp_mult)
+        self.embeddings = Embeddings(vocab_size, dim, n_field_types, pad_id, dropout=dropout)
+        self.profile_encoder = ProfileStateEncoder(dim, profile_layers, n_heads, mlp_mult, dropout)
+        self.event_encoder = EventEncoder(dim, event_layers, n_heads, mlp_mult, dropout)
+        self.history_encoder = HistoryEncoder(dim, history_layers, n_heads, mlp_mult, dropout)
         self.mlm_head = MLMHead(dim, vocab_size)
         self.classification_head = ClassificationHead(dim, n_classes)
 
