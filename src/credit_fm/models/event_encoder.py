@@ -23,17 +23,18 @@ class EventEncoder(nn.Module):
         self.encoder = TransformerEncoder(n_layers, dim, n_heads, mlp_mult)
 
     def forward(self, hidden: torch.Tensor, event_index: torch.Tensor,
-                n_events: int | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+                n_events: int | None = None, return_tokens: bool = False):
         """Encode events and pool.
 
         Args:
             hidden: ``(B, L, dim)`` embedded token sequence.
             event_index: ``(B, L)`` month index per token; ``-1`` for profile/structural.
             n_events: ``E`` to pool to; defaults to ``event_index.max() + 1`` over the batch.
+            return_tokens: also return the token-level encoded states (for the MLM head's local ctx).
 
         Returns:
             ``(event_vecs, event_mask)`` — ``(B, E, dim)`` per-event vectors and ``(B, E)`` bool mask
-            of which events are real (present in that loan).
+            of which events are real; plus ``(B, L, dim)`` token states when ``return_tokens``.
         """
         bsz, length, dim = hidden.shape
         encoded = self.encoder(hidden, event_block_additive_mask(event_index))   # (B, L, dim)
@@ -48,4 +49,6 @@ class EventEncoder(nn.Module):
             1, e_idx.unsqueeze(-1).expand(-1, -1, dim), masked)
         counts = hidden.new_zeros(bsz, size).scatter_add_(1, e_idx, valid.to(hidden.dtype))  # (B, E)
         event_vecs = sums / counts.clamp(min=1).unsqueeze(-1)                     # masked mean
+        if return_tokens:
+            return event_vecs, counts > 0, encoded
         return event_vecs, counts > 0

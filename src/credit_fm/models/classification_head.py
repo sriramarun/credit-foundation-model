@@ -14,4 +14,4 @@ class ClassificationHead(nn.Module):
         self.fc = nn.Linear(hidden_size, num_classes)
 
     def forward(self, loan_embedding):
-        raise NotImplementedError
+        return self.fc(loan_embedding)
