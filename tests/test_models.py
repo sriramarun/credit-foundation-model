@@ -20,6 +20,8 @@ from credit_fm.models.base import (
     padding_additive_mask,
 )
 from credit_fm.models.event_encoder import EventEncoder
+from credit_fm.models.history_encoder import HistoryEncoder
+from credit_fm.models.profile_encoder import ProfileStateEncoder
 
 
 def test_rmsnorm_normalises():
@@ -96,3 +98,42 @@ def test_event_encoder_absent_event_is_zero_and_masked():
     vecs, mask = enc(torch.randn(1, 4, 16), ev, n_events=2)   # but pool to 2 events
     assert mask.tolist() == [[True, False]]
     assert torch.equal(vecs[0, 1], torch.zeros(16))        # absent event → zero vector
+
+
+def test_profile_encoder_shape_and_event_isolation():
+    enc = ProfileStateEncoder(dim=16, n_layers=2, n_heads=4).eval()
+    branch = torch.tensor([[-1, -1, 0, 0, 0, 1, 1, -1],    # profile at 2..4, events at 5,6
+                           [-1, -1, 0, 0, 0, 1, 1, -1]])
+    hidden = torch.randn(2, 8, 16)
+    with torch.no_grad():
+        v1 = enc(hidden, branch)
+        bumped = hidden.clone()
+        bumped[:, 5:7] += 5.0                              # perturb event tokens only
+        v2 = enc(bumped, branch)
+    assert v1.shape == (2, 16) and torch.isfinite(v1).all()
+    assert torch.allclose(v1, v2, atol=1e-5)              # profile vector ignores event tokens
+
+
+def test_history_encoder_shapes_and_masks_absent_events():
+    enc = HistoryEncoder(dim=16, n_layers=2, n_heads=4).eval()
+    profile = torch.randn(2, 16)
+    event_vecs = torch.randn(2, 3, 16)
+    event_mask = torch.tensor([[True, True, True], [True, True, False]])   # loan 1 missing event 2
+    with torch.no_grad():
+        loan1, ctx = enc(profile, event_vecs, event_mask)
+        bumped = event_vecs.clone()
+        bumped[1, 2] += 5.0                               # perturb loan 1's ABSENT event
+        loan2, _ = enc(profile, bumped, event_mask)
+    assert loan1.shape == (2, 16) and ctx.shape == (2, 3, 16)
+    assert torch.isfinite(loan1).all()
+    assert torch.allclose(loan1[1], loan2[1], atol=1e-5)  # masked event can't move the loan embedding
+
+
+def test_history_encoder_gradient_flows():
+    enc = HistoryEncoder(dim=16, n_layers=2, n_heads=4)
+    profile = torch.randn(2, 16, requires_grad=True)
+    event_vecs = torch.randn(2, 3, 16, requires_grad=True)
+    mask = torch.ones(2, 3, dtype=torch.bool)
+    loan, _ = enc(profile, event_vecs, mask)
+    loan.sum().backward()
+    assert torch.isfinite(profile.grad).all() and torch.isfinite(event_vecs.grad).all()
