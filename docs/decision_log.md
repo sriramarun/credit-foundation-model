@@ -18,6 +18,7 @@ Running record of locked decisions. Each entry: decision, rationale, status.
 | DL-012 | Threshold-anchored + per-field numeric bins | locked |
 | DL-013 | Hierarchical three-branch realization; architecture frozen at M2 | locked |
 | DL-014 | Encode-once shards + flat `(B,L)` batches + 3-source MLM masking | locked |
+| DL-015 | Pretraining is data-bound; gate the FM on downstream OOT, not MLM loss | locked |
 
 ## DL-007 — Loan-stratified temporal split
 **Decision.** Split by `loan_id` (every cutoff of a loan stays in one split), ordered by
@@ -82,3 +83,20 @@ carries the indices. A varlen/packed variant (`PackedCollator`) is deferred to M
 corruption, specials never masked. Dynamic per batch for train; deterministic (seeded) for
 val/test so loss is comparable across epochs. The three strategies each exercise a different
 branch.
+
+## DL-015 — Pretraining is data-bound; judge by downstream, not MLM loss
+**Finding (28 Jun, M2 diagnostics).** On the `run_2016_2017` slice at **100k loans (~25M tokens)**
+the model overfits regardless of size or regularisation: train MLM loss → ~0.1 while **validation
+MLM loss bottoms early (~step 150) at ~2.6–2.8, then rises**. Tested 25.5M (dim 384), 25.5M +
+dropout 0.1, and 1.4M (dim 128) — all plateau at val ~2.6–2.8. 100k loans is ~20× below the
+Chinchilla budget for 25.5M params (~500M tokens ≈ ~2M loans; DL-004), so memorisation is expected.
+
+**Decisions.**
+1. **Data scale is the lever** — not model size or dropout. Stop tuning hyperparameters at 100k.
+2. **Parallel-encode the full corpus** before the real pretrain (single-stream `encode_dataset.py`
+   is the bottleneck — 155k loans took ~57 min); then train 25.5M on ~2M loans.
+3. **Best-val checkpointing + early stop** are standard here (overfitting starts by ~step 150 at
+   small data); `train_mlm` restores the best-val weights.
+4. **MLM val loss is a proxy with an entropy floor** (exact FICO/UPB buckets are inherently
+   unpredictable). The FM's gating metric is the **downstream OOT eval vs ROC 0.757** (Phase E),
+   not MLM loss.
