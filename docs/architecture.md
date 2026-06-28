@@ -163,6 +163,7 @@ trains.
 | Split / baselines (G1, OOT) | ✅ done |
 | Tokenizer (M1) | ✅ done — 440 tokens, calendar + anchored bins |
 | Data layer (M2 Brick 1) | ✅ done — encode-once shards, dataset, MLMCollator, datamodule |
-| Hierarchical model (M2 Brick 2) | ⬜ next |
-| Pretraining → 30M checkpoint (M3) | ⬜ scale data only |
-| Embeddings + downstream eval (E) | ⬜ planned |
+| Hierarchical model (M2 Brick 2) | ✅ done — 25.5M @ dim384; trains on real Fannie |
+| Training loop | ✅ done — AdamW+cosine, dropout, best-val checkpointing (`train_mlm`, `pretrain.py`) |
+| Pretraining → 30M checkpoint (M3) | ⬜ **data-bound** — parallel-encode full corpus, train on ~2M loans (DL-015) |
+| Embeddings + downstream eval (E) | ⬜ the verdict: FM embeddings vs ROC 0.757 |

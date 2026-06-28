@@ -58,7 +58,22 @@ dm = CreditDataModule(train_dir, val_dir=val_dir, batch_size=64, limit=1000)  # 
 batch = next(iter(dm.train_dataloader()))   # {input_ids, attention_mask, labels, event_index, ...}
 ```
 
-## 6. Baselines — the honest bar for the FM
+## 6. Pretrain the model (MLM)  ✅ M2
+```bash
+# single-GPU run (encode shards first, step 5). Watch TRAIN vs VAL loss.
+python scripts/pretrain.py \
+  --tokenizer configs/fannie_mae/tokenizer.json \
+  --train-dir gs://.../output/encoded/fannie_mae/run_2016_2017/train \
+  --val-dir   gs://.../output/encoded/fannie_mae/run_2016_2017/val \
+  --limit 100000 --steps 1500 --batch-size 128 --dim 384 --bf16 --dropout 0.1 \
+  --val-every 150 --log-every 50 --out gs://.../runs/toy.pt
+```
+**Read the loss:** train and val falling *together* = generalising; a wide gap = overfitting.
+`train_mlm` early-stops on best val and saves those weights. At small data (≤100k loans) the model
+overfits by design — see **DL-015**: the 25.5M model needs ~2M loans (~500M tokens). MLM loss is a
+proxy; the real gate is the downstream OOT eval (§8). Scale `--dim`/`--steps`/`--limit` for M3.
+
+## 7. Baselines — the honest bar for the FM
 ```bash
 # Fannie out-of-time (OOT) — the real bar
 python scripts/build_oot_baseline.py --train-years 2000-2006 --test-years 2008-2010 \
@@ -80,8 +95,12 @@ ruff check . && pytest -q
 Generic split + classify work as-is. Write `configs/<asset>/{baseline,tokenizer}.yaml`, then run
 steps 2–5 — no code change.
 
+## 8. Downstream eval — the real verdict (planned, Phase E)
+The FM is judged by whether its `[USR]` embeddings beat the **OOT baseline (ROC 0.757)** at default
+prediction — not by MLM loss (DL-015). To be built:
+- `scripts/extract_embeddings.py` — `[USR]` embeddings from a checkpoint.
+- `scripts/evaluate_downstream.py` — FM embeddings vs the OOT baseline (the FM-vs-0.757 test).
+
 ## Not built yet (TODO — land as stages complete)
-- `models/` hierarchical three-branch encoder (M2 Brick 2)
-- `scripts/pretrain.py` — pretrain the 30M model on 8× H100 (M3)
-- `scripts/extract_embeddings.py` — `[USR]` embeddings from a checkpoint (E)
-- `scripts/evaluate_downstream.py` — FM embeddings vs the OOT baseline (the FM-vs-0.757 test)
+- **Parallel encoding** (`encode_dataset.py --workers`) — needed for the full-corpus M3 run (DL-015).
+- 8× H100 multi-GPU pretraining + W&B logging (M3; DL-009).
