@@ -22,15 +22,17 @@ class ProfileStateEncoder(nn.Module):
         super().__init__()
         self.encoder = TransformerEncoder(n_layers, dim, n_heads, mlp_mult)
 
-    def forward(self, hidden: torch.Tensor, branch: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden: torch.Tensor, branch: torch.Tensor, return_tokens: bool = False):
         """Return the ``(B, dim)`` profile vector.
 
         Args:
             hidden: ``(B, L, dim)`` embedded token sequence.
             branch: ``(B, L)`` branch ids; profile tokens are ``branch == 0``.
+            return_tokens: also return the token-level encoded states (for the MLM head's local ctx).
         """
         profile = branch == 0                                          # (B, L)
         index = torch.where(profile, torch.zeros_like(branch), torch.full_like(branch, -1))
         encoded = self.encoder(hidden, event_block_additive_mask(index))   # intra-profile attention
         mask = profile.unsqueeze(-1).to(hidden.dtype)
-        return (encoded * mask).sum(1) / mask.sum(1).clamp(min=1)      # masked mean → (B, dim)
+        profile_vec = (encoded * mask).sum(1) / mask.sum(1).clamp(min=1)   # masked mean → (B, dim)
+        return (profile_vec, encoded) if return_tokens else profile_vec
