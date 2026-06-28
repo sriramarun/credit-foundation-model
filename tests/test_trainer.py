@@ -1,0 +1,86 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 finevals.ai and contributors.
+"""train_mlm tests — the loop drives loss down on real shards through the CreditDataModule.
+
+Writes tiny synthetic train/val shard dirs, builds the datamodule + a tiny model, and runs a short
+training loop on CPU, asserting the loss falls and validation is recorded.
+"""
+
+from __future__ import annotations
+
+import json
+
+import numpy as np
+import pandas as pd
+
+from credit_fm.data import CreditDataModule
+from credit_fm.data.encode import iter_shards
+from credit_fm.models import CreditFoundationModel
+from credit_fm.tokenizer import KVTTokenizer
+from credit_fm.training import build_optimizer, train_mlm
+from credit_fm.utils import storage
+
+CONFIG = {
+    "id_col": "loan_id",
+    "time_col": "reporting_date",
+    "time_field": "loan_age",
+    "profile": {"numeric": ["original_ltv"], "categorical": ["channel"]},
+    "event": {"numeric": ["current_interest_rate", "current_upb"], "categorical": []},
+    "n_bins": 8,
+    "max_categories": 64,
+    "max_events": 60,
+    "calendar": "yearquarter",
+}
+
+
+def _panel(n_loans, n_months=5) -> pd.DataFrame:
+    rng = np.random.default_rng(0)
+    rows = []
+    for lid in range(n_loans):
+        ltv = int(rng.integers(40, 97))
+        chan = rng.choice(["R", "C", "B"])
+        rate = float(rng.uniform(3, 8))
+        for m in range(n_months):
+            rows.append({
+                "loan_id": f"L{lid}", "reporting_date": f"2020-{m+1:02d}-28",
+                "loan_age": 12 + m, "original_ltv": ltv, "channel": chan,
+                "current_interest_rate": rate, "current_upb": 200_000 - m * 1_000,
+            })
+    return pd.DataFrame(rows)
+
+
+def _write_split(tok, panel, out_dir, shard_size=8):
+    names = []
+    for i, shard in enumerate(iter_shards(tok, panel, shard_size)):
+        name = f"shard-{i:05d}.parquet"
+        storage.write_parquet(shard, storage.join(out_dir, name))
+        names.append(name)
+    storage.write_text(json.dumps({"vocab_size": tok.vocab_size, "shards": names}),
+                       storage.join(out_dir, "manifest.json"))
+
+
+def test_build_optimizer_splits_decay_groups():
+    tok = KVTTokenizer(CONFIG).fit(_panel(4))
+    model = CreditFoundationModel(tok.vocab_size, len(tok.field_types), dim=16, n_heads=2,
+                                  profile_layers=1, event_layers=1, history_layers=1)
+    opt = build_optimizer(model, lr=1e-3, weight_decay=0.1)
+    decay, no_decay = opt.param_groups
+    assert decay["weight_decay"] == 0.1 and no_decay["weight_decay"] == 0.0
+    assert len(decay["params"]) and len(no_decay["params"])
+
+
+def test_train_mlm_reduces_loss_and_logs_val(tmp_path):
+    tok = KVTTokenizer(CONFIG).fit(_panel(12))
+    train_dir, val_dir = str(tmp_path / "train"), str(tmp_path / "val")
+    _write_split(tok, _panel(12), train_dir)
+    _write_split(tok, _panel(6), val_dir)
+
+    dm = CreditDataModule(train_dir, val_dir=val_dir, batch_size=4)
+    model = CreditFoundationModel(tok.vocab_size, len(tok.field_types), dim=16, n_heads=2,
+                                  profile_layers=1, event_layers=1, history_layers=1)
+    history = train_mlm(model, dm, steps=60, lr=2e-3, warmup=5, device="cpu",
+                        log_every=0, val_every=30)
+    assert len(history["train"]) == 60
+    # windowed means (single-step loss is noisy across shuffled batches) + the val trend
+    assert np.mean(history["train"][-10:]) < np.mean(history["train"][:10])
+    assert len(history["val"]) == 2 and history["val"][-1][1] < history["val"][0][1]

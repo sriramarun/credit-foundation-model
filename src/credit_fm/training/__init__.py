@@ -4,6 +4,8 @@
 """
 
 from .masking import IGNORE_INDEX, mask_tokens
-from .trainer import CreditTrainer
+from .optimizers import build_optimizer, build_scheduler
+from .trainer import CreditTrainer, train_mlm
 
-__all__ = ['CreditTrainer', 'mask_tokens', 'IGNORE_INDEX']
+__all__ = ['CreditTrainer', 'train_mlm', 'build_optimizer', 'build_scheduler',
+           'mask_tokens', 'IGNORE_INDEX']
