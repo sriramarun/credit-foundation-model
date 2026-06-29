@@ -111,7 +111,11 @@ def encode_to_shards(tokenizer, tokenizer_path: str, panel: pd.DataFrame, out_di
 
     if workers and workers > 1:
         import multiprocessing as mp
-        with mp.Pool(workers, initializer=_worker_init, initargs=(tokenizer_path, key)) as pool:
+        # Use 'spawn', NOT 'fork': the parent already opened gRPC/gcsfs (reading the panel from
+        # GCS), and forking after gRPC init deadlocks the workers when they write shards back to
+        # GCS. spawn gives each worker a clean process that builds its own gcsfs connection.
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(workers, initializer=_worker_init, initargs=(tokenizer_path, key)) as pool:
             for name, nl, nt in pool.imap_unordered(_encode_shard, _tasks()):
                 names.append(name)
                 n_loans += nl
