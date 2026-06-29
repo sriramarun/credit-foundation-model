@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from credit_fm.data.encode import encode_panel, iter_shards
+from credit_fm.data.encode import encode_panel, encode_to_shards, iter_shards
 from credit_fm.tokenizer import KVTTokenizer
 from credit_fm.utils import storage
 
@@ -65,6 +65,25 @@ def test_iter_shards_keeps_loans_whole_and_covers_all():
     seen = [set(s[tok.id_col]) for s in shards]
     assert sum(len(s) for s in seen) == 8                      # no overlap
     assert set().union(*seen) == set(panel.loan_id)            # every loan present exactly once
+
+
+def test_parallel_encode_matches_sequential(tmp_path):
+    panel = _panel(n_loans=8, n_months=4)
+    tok = KVTTokenizer(CONFIG).fit(panel)
+    tok_path = str(tmp_path / "tok.json")
+    tok.save(tok_path)
+
+    seq_names, seq_loans, seq_tokens = encode_to_shards(
+        tok, tok_path, panel, str(tmp_path / "seq"), shard_size=3, workers=0)
+    par_names, par_loans, par_tokens = encode_to_shards(
+        tok, tok_path, panel, str(tmp_path / "par"), shard_size=3, workers=2)
+
+    assert seq_names == par_names                       # deterministic shard names
+    assert (seq_loans, seq_tokens) == (par_loans, par_tokens)
+    assert seq_loans == 8
+    seq0 = storage.read_parquet(storage.join(str(tmp_path / "seq"), seq_names[0]))
+    par0 = storage.read_parquet(storage.join(str(tmp_path / "par"), par_names[0]))
+    assert list(seq0.iloc[0].input_ids) == list(par0.iloc[0].input_ids)
 
 
 def test_shard_survives_parquet_roundtrip(tmp_path):

@@ -8,9 +8,11 @@ the result. Each row of a shard is one loan with four aligned ragged columns —
 ``input_ids`` / ``event_index`` / ``field_type`` / ``branch`` (the contract the hierarchical model
 and the MLM masking both read) — plus ``n_tokens`` / ``n_events`` for batching and bucketing.
 
-``encode_panel`` (one DataFrame → one shard DataFrame) is the testable core; ``iter_shards`` chunks
-a panel into shard-sized DataFrames. The ``scripts/encode_dataset.py`` CLI wraps these with
-pluggable storage so the same code writes local or ``gs://`` shards.
+``encode_panel`` (one DataFrame → one shard DataFrame) is the testable core. ``encode_to_shards``
+writes a whole panel to sharded parquet + returns the shard list, **optionally across worker
+processes** (``workers > 1``) — the per-loan Python tokenization is CPU-bound, so this is the
+parallelism that makes a full-corpus encode (millions of loans) feasible. ``iter_shards`` is the
+in-process generator used by tests.
 """
 
 from __future__ import annotations
@@ -48,14 +50,81 @@ def encode_panel(tokenizer, panel: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame.from_records(records)
 
 
+def _iter_subpanels(panel: pd.DataFrame, id_col: str, shard_size: int):
+    """Yield ``(shard_id, sub_panel)`` — loans assigned to shards in first-seen order, kept whole."""
+    order = {lid: i for i, lid in enumerate(panel[id_col].drop_duplicates())}
+    shard_of = panel[id_col].map(order) // shard_size
+    for sid, sub in panel.groupby(shard_of, sort=True):
+        yield int(sid), sub
+
+
 def iter_shards(tokenizer, panel: pd.DataFrame, shard_size: int) -> Iterator[pd.DataFrame]:
-    """Yield encoded shard DataFrames of at most ``shard_size`` loans each.
+    """Yield encoded shard DataFrames of at most ``shard_size`` loans each (in-process).
 
     Loans are kept whole (grouped by id) and assigned to shards in first-seen order, so a loan's
     rows never split across shards.
     """
     idc = tokenizer.id_col
-    loan_ids = panel[idc].drop_duplicates().tolist()
-    for start in range(0, len(loan_ids), shard_size):
-        chunk = set(loan_ids[start:start + shard_size])
-        yield encode_panel(tokenizer, panel[panel[idc].isin(chunk)])
+    for _, sub in _iter_subpanels(panel, idc, shard_size):
+        yield encode_panel(tokenizer, sub)
+
+
+# ----------------------------------------------------------------- parallel encode
+_WORKER_TOK = None  # per-process tokenizer, set by the pool initializer
+
+
+def _worker_init(tokenizer_path: str, key) -> None:
+    """Pool initializer: load the tokenizer once per worker process (cheaper than pickling it)."""
+    global _WORKER_TOK
+    from credit_fm.tokenizer import KVTTokenizer
+    from credit_fm.utils import storage
+    storage.ensure_auth(tokenizer_path, key)
+    _WORKER_TOK = KVTTokenizer.load(tokenizer_path)
+
+
+def _encode_shard(task):
+    """Worker task: encode one sub-panel and write its shard parquet; return (name, loans, tokens)."""
+    from credit_fm.utils import storage
+    sid, sub, out_dir, key = task
+    name = f"shard-{sid:05d}.parquet"
+    shard = encode_panel(_WORKER_TOK, sub)
+    storage.ensure_auth(out_dir, key)
+    storage.write_parquet(shard, storage.join(out_dir, name))
+    return name, len(shard), int(shard["n_tokens"].sum())
+
+
+def encode_to_shards(tokenizer, tokenizer_path: str, panel: pd.DataFrame, out_dir: str, *,
+                     shard_size: int = 50_000, workers: int = 0, key=None, log=print):
+    """Encode ``panel`` to sharded parquet under ``out_dir``; return ``(shard_names, n_loans, n_tokens)``.
+
+    ``workers <= 1`` encodes in-process. ``workers > 1`` fans the shards out across that many worker
+    processes (each loads ``tokenizer_path`` once) — the speed-up that makes a full-corpus encode
+    feasible. Shard names are deterministic (``shard-<id>.parquet``) regardless of completion order.
+    """
+    from credit_fm.utils import storage
+    idc = tokenizer.id_col
+    names, n_loans, n_tokens = [], 0, 0
+
+    def _tasks():
+        for sid, sub in _iter_subpanels(panel, idc, shard_size):
+            yield sid, sub, out_dir, key
+
+    if workers and workers > 1:
+        import multiprocessing as mp
+        with mp.Pool(workers, initializer=_worker_init, initargs=(tokenizer_path, key)) as pool:
+            for name, nl, nt in pool.imap_unordered(_encode_shard, _tasks()):
+                names.append(name)
+                n_loans += nl
+                n_tokens += nt
+                log(f"  wrote {name}  ({nl:,} loans, {nt:,} tokens)")
+    else:
+        for sid, sub, od, k in _tasks():
+            name = f"shard-{sid:05d}.parquet"
+            shard = encode_panel(tokenizer, sub)
+            storage.write_parquet(shard, storage.join(od, name))
+            names.append(name)
+            n_loans += len(shard)
+            n_tokens += int(shard["n_tokens"].sum())
+            log(f"  wrote {name}  ({len(shard):,} loans, {int(shard['n_tokens'].sum()):,} tokens)")
+
+    return sorted(names), n_loans, n_tokens
