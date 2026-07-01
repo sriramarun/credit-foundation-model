@@ -113,7 +113,8 @@ def main() -> None:
     df = emb.merge(feats, left_on=id_col, right_index=True, how="left").reset_index(drop=True)
 
     # 3) loan-disjoint split (hash on id — reproducible)
-    is_test = pd.util.hash_pandas_object(df[id_col], index=False) % 100 < int(args.test_frac * 100)
+    rng = np.random.default_rng(42)
+    is_test = rng.random(len(df)) < args.test_frac   # one row per loan -> loan-disjoint
     tr, te = df[~is_test], df[is_test]
     print(f"split: train {len(tr):,} ({tr.y.mean()*100:.2f}% default) | "
           f"test {len(te):,} ({te.y.mean()*100:.2f}% default)", flush=True)
