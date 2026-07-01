@@ -36,15 +36,15 @@ from credit_fm.utils import storage
 
 def forward_default_loans(panel, id_col, time_col, label_col, cutoff, horizon_months):
     """Loan ids that record a default in ``(cutoff, cutoff + horizon]`` — the forward label = 1 set."""
-    end = (pd.Timestamp(cutoff) + pd.DateOffset(months=horizon_months)).strftime("%Y-%m-%d")
-    dt = panel[time_col].astype("string")
-    hit = panel[(dt > cutoff) & (dt <= end) & panel[label_col].astype(bool)]
+    lo = pd.to_datetime(cutoff); hi = lo + pd.DateOffset(months=horizon_months)
+    dt = pd.to_datetime(panel[time_col], errors="coerce")
+    hit = panel[(dt > lo) & (dt <= hi) & panel[label_col].astype(bool)]
     return set(hit[id_col])
 
 
 def features_asof(panel, id_col, time_col, cols, cutoff):
     """Each loan's most-recent row at/<= cutoff, restricted to the feature columns (the snapshot)."""
-    hist = panel[panel[time_col].astype("string") <= cutoff]
+    hist = panel[pd.to_datetime(panel[time_col], errors="coerce") <= pd.to_datetime(cutoff)]
     snap = hist.sort_values(time_col).groupby(id_col).tail(1).set_index(id_col)
     return snap[[c for c in cols if c in snap.columns]]
 
