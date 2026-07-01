@@ -36,7 +36,8 @@ from credit_fm.utils import storage
 
 def forward_default_loans(panel, id_col, time_col, label_col, cutoff, horizon_months):
     """Loan ids that record a default in ``(cutoff, cutoff + horizon]`` — the forward label = 1 set."""
-    lo = pd.to_datetime(cutoff); hi = lo + pd.DateOffset(months=horizon_months)
+    lo = pd.to_datetime(cutoff)
+    hi = lo + pd.DateOffset(months=horizon_months)
     dt = pd.to_datetime(panel[time_col], errors="coerce")
     hit = panel[(dt > lo) & (dt <= hi) & panel[label_col].astype(bool)]
     return set(hit[id_col])
