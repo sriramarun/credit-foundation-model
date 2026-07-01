@@ -34,3 +34,4 @@ venv/
 .idea/
 .vscode/
 logs/
+runs/

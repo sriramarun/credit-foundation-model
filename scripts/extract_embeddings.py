@@ -53,10 +53,11 @@ def observe_panel(panel: pd.DataFrame, id_col: str, time_col: str,
                   cutoff: str | None, gate_col: str | None) -> pd.DataFrame:
     """Truncate history to ``<= cutoff`` and (optionally) keep only loans passing the gate at cutoff."""
     if cutoff is not None:
-        panel = panel[panel[time_col].astype("string") <= cutoff]
+        dt = pd.to_datetime(panel[time_col], errors="coerce")
+        panel = panel[dt <= pd.to_datetime(cutoff)]
     if gate_col is not None:
         last = panel.sort_values(time_col).groupby(id_col).tail(1)     # most recent kept row per loan
-        keep = set(last.loc[last[gate_col].astype(bool), id_col])
+        keep = set(last.loc[last[gate_col].fillna(False).astype(bool), id_col])
         panel = panel[panel[id_col].isin(keep)]
     return panel
 
@@ -95,6 +96,9 @@ def main() -> None:
     print(f"panel: {panel[tok.id_col].nunique():,} loans "
           f"(cutoff={args.cutoff}, gate={args.gate_col})", flush=True)
 
+    if panel.empty:
+        raise SystemExit("no loans after cutoff/gate — run the diagnostic: check "
+                         "reporting_date range/format and is_performing values")
     carry = [c for c in args.carry.split(",") if c]
     carried = panel.groupby(tok.id_col)[carry].first() if carry else None
 
