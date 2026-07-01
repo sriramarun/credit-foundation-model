@@ -57,7 +57,7 @@ def observe_panel(panel: pd.DataFrame, id_col: str, time_col: str,
         panel = panel[dt <= pd.to_datetime(cutoff)]
     if gate_col is not None:
         last = panel.sort_values(time_col).groupby(id_col).tail(1)     # most recent kept row per loan
-        keep = set(last.loc[last[gate_col].astype(bool), id_col])
+        keep = set(last.loc[last[gate_col].fillna(False).astype(bool), id_col])
         panel = panel[panel[id_col].isin(keep)]
     return panel
 
