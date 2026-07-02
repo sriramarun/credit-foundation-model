@@ -23,24 +23,17 @@ Derived columns (so ``prepare_data.py`` / ``train_baseline.py`` stay asset-gener
   * ``prepay_event``      True if zero_balance_code == '01' (prepaid/matured)
   * ``is_performing``     True if current (dlq_num == 0) and not yet terminated
 
-Examples
---------
-One cohort across a reporting window (fast; real multi-month sequences for the tokenizer):
-    python -u scripts/ingest_fannie_mae.py --files \
-        gs://.../reporting_year=2016/reporting_quarter=Q1/from_2014Q1_0.parquet \
-        gs://.../reporting_year=2016/reporting_quarter=Q2/from_2014Q1_0.parquet \
-        --out gs://sriram-credit-fm-data/output/raw/fannie_mae
+Config-driven (recipe: ``configs/fannie_mae/ingest.yaml``)::
 
-Full hive span (parallel reads + loan sample):
-    python -u scripts/ingest_fannie_mae.py \
-        --gcs-root gs://sriram-credit-fm-data/fannie_by_reporting \
-        --reporting 2016Q1 2016Q2 2016Q3 2016Q4 2017Q1 2017Q2 2017Q3 2017Q4 \
-        --workers 8 --sample-pct 10 --out gs://sriram-credit-fm-data/output/raw/fannie_mae
+    python -u scripts/ingest_fannie_mae.py -c configs/fannie_mae/ingest.yaml
+    python -u scripts/ingest_fannie_mae.py -c configs/fannie_mae/ingest.yaml \
+        --sources.reporting '[2016Q1, 2016Q2]' --sample_pct 100
+    python -u scripts/ingest_fannie_mae.py -c configs/fannie_mae/ingest.yaml \
+        --sources.files '[gs://.../from_2014Q1_0.parquet]'
 """
 
 from __future__ import annotations
 
-import argparse
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -48,13 +41,12 @@ from pathlib import Path
 import pandas as pd
 
 from credit_fm.utils import storage
+from credit_fm.utils.config import parse_cli, summarize
 
 # Zero Balance Code -> outcome. Credit events count as default; 01 is a clean prepay.
 ZBC_CREDIT_EVENT = {"02", "03", "09", "15"}  # third-party sale, short sale, REO/DIL, note sale
 ZBC_PREPAY = {"01"}                          # prepaid or matured
 D180 = 6                                     # months delinquent that defines a default
-
-DEFAULT_KEY = "/workspace/.gcloud/credit-fm-sa.json"  # GCS service-account key on the container
 
 # Real published column names the derivations depend on.
 COL_ID = "loan_identifier"
@@ -108,13 +100,15 @@ def _hive_path(root: str, reporting: str) -> str:
     return f"{root.rstrip('/')}/reporting_year={year}/reporting_quarter=Q{q}"
 
 
-def _resolve_sources(args) -> list[str]:
-    if args.files:
-        return args.files
-    root = args.gcs_root or args.local_root
-    if not args.reporting:
-        raise SystemExit("--gcs-root/--local-root needs --reporting (e.g. 2016Q1 2016Q2).")
-    return [_hive_path(root, r) for r in args.reporting]
+def _resolve_sources(cfg) -> list[str]:
+    files = cfg.get_path("sources.files")
+    if files:
+        return list(files)
+    root, reporting = cfg.get_path("sources.root"), cfg.get_path("sources.reporting")
+    if not (root and reporting):
+        raise SystemExit("config needs sources.files OR sources.root + sources.reporting "
+                         "(e.g. [2016Q1, 2016Q2]).")
+    return [_hive_path(root, r) for r in reporting]
 
 
 def _maybe_auth(key: str) -> None:
@@ -127,48 +121,35 @@ def _maybe_auth(key: str) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    src = ap.add_mutually_exclusive_group(required=True)
-    src.add_argument("--files", nargs="+", help="explicit parquet files (local or gs://)")
-    src.add_argument("--gcs-root", help="gs://bucket/fannie_by_reporting (Hive-partitioned)")
-    src.add_argument("--local-root", help="local dir holding the Hive-partitioned layout")
-    ap.add_argument("--reporting", nargs="+", help="reporting quarters, e.g. 2016Q1 2016Q2")
-    ap.add_argument("--out", default="data/raw/fannie_mae",
-                    help="panel destination; local path or gs:///s3:// URL")
-    ap.add_argument("--combined-name", default="panel.parquet")
-    ap.add_argument("--sample-pct", type=int, default=100,
-                    help="keep ~N%% of loans (hash on loan_id); a small sample is plenty for the tokenizer")
-    ap.add_argument("--workers", type=int, default=4,
-                    help="parallel source reads (threads; gcsfs/pyarrow release the GIL during IO)")
-    ap.add_argument("--key", default=DEFAULT_KEY, help="GCS service-account JSON")
-    args = ap.parse_args()
+    cfg = parse_cli(__doc__, default_config="configs/fannie_mae/ingest.yaml")
+    print(f"config: {cfg.config_path}\n"
+          f"{summarize(cfg, 'sources', 'out', 'sample_pct', 'workers')}", flush=True)
 
-    _maybe_auth(args.key)
-    sources = _resolve_sources(args)
-    out = args.out.rstrip("/")                          # local path or gs:///s3:// URL
-    storage.ensure_auth(out, args.key)
+    _maybe_auth(cfg.key)
+    sources = _resolve_sources(cfg)
+    out = cfg.out.rstrip("/")                           # local path or gs:///s3:// URL
+    storage.ensure_auth(out, cfg.key)
 
     def _read_source(s: str) -> pd.DataFrame:
         df = _derive(storage.read_parquet(s))          # fsspec read: file or hive dir, local/gs://
-        if args.sample_pct < 100:
-            keep = pd.util.hash_pandas_object(df["loan_id"], index=False) % 100 < args.sample_pct
+        if cfg.sample_pct < 100:
+            keep = pd.util.hash_pandas_object(df["loan_id"], index=False) % 100 < cfg.sample_pct
             df = df[keep]
         print(f"  done {s}: {len(df):>10,} rows  {df['loan_id'].nunique():>8,} loans  "
               f"reporting {df['reporting_date'].min()}..{df['reporting_date'].max()}", flush=True)
         return df
 
-    print(f"Reading {len(sources)} source(s) with {args.workers} parallel workers ...", flush=True)
-    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+    print(f"Reading {len(sources)} source(s) with {cfg.workers} parallel workers ...", flush=True)
+    with ThreadPoolExecutor(max_workers=cfg.workers) as ex:
         frames = list(ex.map(_read_source, sources))   # order preserved
     panel = pd.concat(frames, ignore_index=True)
-    panel_path = storage.join(out, args.combined_name)
+    panel_path = storage.join(out, cfg.combined_name)
     storage.write_parquet(panel, panel_path)            # pluggable: local / gs:// / s3://
     print(f"\nWrote {panel_path}: {len(panel):,} rows, "
           f"{panel['loan_id'].nunique():,} loans, "
           f"reporting {panel['reporting_date'].min()} -> {panel['reporting_date'].max()}, "
           f"origination {panel['origination_date'].min()} -> {panel['origination_date'].max()}")
-    print(f"Next: scripts/prepare_data.py --input {panel_path} --origination-col origination_date")
+    print("Next: python scripts/prepare_data.py -c configs/fannie_mae/prepare.yaml")
 
 
 if __name__ == "__main__":

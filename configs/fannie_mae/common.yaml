@@ -13,6 +13,7 @@ tokenizer: configs/fannie_mae/tokenizer.json  # frozen KVT vocab (train-only fit
 schema: configs/fannie_mae/tokenizer.yaml     # field lists + id/time cols (generated)
 
 paths:
+  raw: ${gcs_root}/output/raw/fannie_mae
   processed: ${gcs_root}/output/processed/fannie_mae/${run_name}
   encoded: ${gcs_root}/output/encoded/fannie_mae/${run_name}
   embeddings: ${gcs_root}/output/embeddings/fannie_mae/${run_name}
