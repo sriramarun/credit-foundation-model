@@ -5,22 +5,20 @@
 Runs a processed monthly panel (tokenizer schema) through the frozen model and writes one row per
 loan: ``loan_id`` + the ``dim`` embedding columns (``e0..e{dim-1}``) + carried columns + ``n_events``.
 
-Leakage control lives here: pass ``--cutoff`` to truncate each loan's history to reporting dates
-``<= cutoff`` (so the embedding only "sees" the past), and ``--gate-col is_performing`` to keep only
-loans performing at that cutoff (the "predict *new* defaults" gate). The downstream label (default
-within the forward window) is computed later, in ``evaluate_downstream.py``, from the full panel.
+Leakage control lives here: ``observe.cutoff`` truncates each loan's history to reporting dates
+``<= cutoff`` (so the embedding only "sees" the past), and ``observe.gate_col: is_performing``
+keeps only loans performing at that cutoff (the "predict *new* defaults" gate). The downstream
+label (default within the forward window) is computed later, in ``evaluate_downstream.py``.
 
-Example (observe at Dec 2016, performing only):
-    python scripts/extract_embeddings.py \
-        --panel gs://.../output/processed/fannie_mae/run_2016_2017/train.parquet \
-        --checkpoint gs://.../runs/m3_full.pt --tokenizer configs/fannie_mae/tokenizer.json \
-        --cutoff 2016-12-31 --gate-col is_performing --carry origination_date \
-        --out gs://.../embeddings/m3_dec2016_train.parquet --bf16
+Config-driven (recipe: ``configs/fannie_mae/extract.yaml``)::
+
+    python scripts/extract_embeddings.py -c configs/fannie_mae/extract.yaml
+    python scripts/extract_embeddings.py -c configs/fannie_mae/extract.yaml \
+        --limit 1000 --observe.cutoff 2017-06-30 --out gs://.../m3_jun2017.parquet
 """
 
 from __future__ import annotations
 
-import argparse
 import time
 
 import fsspec
@@ -33,6 +31,7 @@ from credit_fm.data.encode import encode_panel
 from credit_fm.models import CreditFoundationModel
 from credit_fm.tokenizer import KVTTokenizer
 from credit_fm.utils import storage
+from credit_fm.utils.config import parse_cli, summarize
 
 
 def load_checkpoint(path: str, key: str):
@@ -63,52 +62,40 @@ def observe_panel(panel: pd.DataFrame, id_col: str, time_col: str,
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--panel", required=True, help="processed monthly panel; local or gs://")
-    ap.add_argument("--checkpoint", required=True, help="pretrained checkpoint (.pt); local or gs://")
-    ap.add_argument("--tokenizer", default="configs/fannie_mae/tokenizer.json")
-    ap.add_argument("--out", required=True, help="output embeddings parquet; local or gs://")
-    ap.add_argument("--cutoff", default=None, help="keep reporting dates <= this ISO date (no leakage)")
-    ap.add_argument("--gate-col", default=None,
-                    help="keep loans truthy in this col at cutoff (e.g. is_performing)")
-    ap.add_argument("--carry", default="", help="comma-sep panel cols to carry per loan (first value)")
-    ap.add_argument("--batch-size", type=int, default=256)
-    ap.add_argument("--device", default=None, help="cuda|cpu (default: auto)")
-    ap.add_argument("--bf16", action="store_true")
-    ap.add_argument("--limit", type=int, default=None, help="cap loans (smoke test)")
-    ap.add_argument("--key", default=storage.GCS_DEFAULT_KEY)
-    args = ap.parse_args()
+    cfg = parse_cli(__doc__, default_config="configs/fannie_mae/extract.yaml")
+    print(f"config: {cfg.config_path}\n"
+          f"{summarize(cfg, 'checkpoint', 'panel', 'observe', 'batch_size', 'out')}", flush=True)
 
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    tok = KVTTokenizer.load(args.tokenizer)
-    model, cfg = load_checkpoint(args.checkpoint, args.key)
+    device = cfg.runtime.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    tok = KVTTokenizer.load(cfg.tokenizer)
+    model, mc = load_checkpoint(cfg.checkpoint, cfg.key)
     model.to(device)
-    dim = cfg["dim"]
+    dim = mc["dim"]
     print(f"model: dim={dim}, {model.num_parameters()/1e6:.1f}M params on {device}", flush=True)
 
-    storage.ensure_auth(args.panel, args.key)
-    panel = storage.read_parquet(args.panel)
-    panel = observe_panel(panel, tok.id_col, tok.time_col, args.cutoff, args.gate_col)
-    if args.limit:
-        keep = panel[tok.id_col].drop_duplicates().head(args.limit)
+    storage.ensure_auth(cfg.panel, cfg.key)
+    panel = storage.read_parquet(cfg.panel)
+    cutoff, gate_col = cfg.observe.cutoff, cfg.observe.gate_col
+    panel = observe_panel(panel, tok.id_col, tok.time_col, cutoff, gate_col)
+    if cfg.limit:
+        keep = panel[tok.id_col].drop_duplicates().head(cfg.limit)
         panel = panel[panel[tok.id_col].isin(keep)]
     print(f"panel: {panel[tok.id_col].nunique():,} loans "
-          f"(cutoff={args.cutoff}, gate={args.gate_col})", flush=True)
+          f"(cutoff={cutoff}, gate={gate_col})", flush=True)
 
     if panel.empty:
         raise SystemExit("no loans after cutoff/gate — run the diagnostic: check "
                          "reporting_date range/format and is_performing values")
-    carry = [c for c in args.carry.split(",") if c]
+    carry = list(cfg.get_path("carry") or [])
     carried = panel.groupby(tok.id_col)[carry].first() if carry else None
 
     shard = encode_panel(tok, panel)                                  # per-loan token arrays
     collate = MLMCollator(vocab_size=tok.vocab_size, mask=False)      # no masking — inference
-    use_amp = args.bf16 and device.startswith("cuda")
+    use_amp = cfg.runtime.bf16 and device.startswith("cuda")
 
     t0, embs = time.time(), []
-    for start in range(0, len(shard), args.batch_size):
-        rows = shard.iloc[start:start + args.batch_size]
+    for start in range(0, len(shard), cfg.batch_size):
+        rows = shard.iloc[start:start + cfg.batch_size]
         samples = []
         for _, r in rows.iterrows():
             s = {k: torch.tensor(r[k], dtype=torch.long)
@@ -128,8 +115,8 @@ def main() -> None:
     if carried is not None:
         out = out.merge(carried, left_on=tok.id_col, right_index=True, how="left")
 
-    storage.write_parquet(out, args.out)
-    print(f"wrote {len(out):,} loan embeddings (dim={dim}) -> {args.out}  "
+    storage.write_parquet(out, cfg.out)
+    print(f"wrote {len(out):,} loan embeddings (dim={dim}) -> {cfg.out}  "
           f"({time.time()-t0:.0f}s)", flush=True)
 
 

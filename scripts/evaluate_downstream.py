@@ -16,11 +16,15 @@ processed panel, this:
 The winner is decided on the held-out set: if *embeddings* (or *combined*) beats *features*, the FM
 adds signal beyond the raw as-of-cutoff features. (For a calendar-OOT verdict vs the 0.757/0.784
 bars, run this on a multi-year panel with a train-years/test-years split — see the runbook.)
+
+Config-driven (recipe: ``configs/fannie_mae/evaluate.yaml``)::
+
+    python scripts/evaluate_downstream.py -c configs/fannie_mae/evaluate.yaml
+    python scripts/evaluate_downstream.py -c configs/fannie_mae/evaluate.yaml --task.horizon_months 6
 """
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 
 import numpy as np
@@ -32,6 +36,7 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.preprocessing import StandardScaler
 
 from credit_fm.utils import storage
+from credit_fm.utils.config import parse_cli, summarize
 
 
 def forward_default_loans(panel, id_col, time_col, label_col, cutoff, horizon_months):
@@ -77,44 +82,34 @@ def _score(model, Xtr, ytr, Xte, yte):
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--embeddings", required=True, help="per-loan embeddings parquet (extract step)")
-    ap.add_argument("--panel", required=True, help="full processed monthly panel (for label+features)")
-    ap.add_argument("--config", default="configs/fannie_mae/tokenizer.yaml",
-                    help="yaml with id_col/time_col + profile/event field lists")
-    ap.add_argument("--cutoff", required=True, help="observation date used for the embeddings")
-    ap.add_argument("--horizon-months", type=int, default=12)
-    ap.add_argument("--label-col", default="default_event")
-    ap.add_argument("--test-frac", type=float, default=0.3, help="held-out loan fraction (hash split)")
-    ap.add_argument("--device", default="cuda", help="xgboost device: cuda|cpu")
-    ap.add_argument("--report", default=None)
-    ap.add_argument("--key", default=storage.GCS_DEFAULT_KEY)
-    args = ap.parse_args()
+    cfg = parse_cli(__doc__, default_config="configs/fannie_mae/evaluate.yaml")
+    print(f"config: {cfg.config_path}\n"
+          f"{summarize(cfg, 'embeddings', 'panel', 'task', 'split', 'xgb_device', 'report')}",
+          flush=True)
+    cutoff, horizon = cfg.task.cutoff, cfg.task.horizon_months
 
-    cfg = yaml.safe_load(open(args.config))
-    id_col, time_col = cfg["id_col"], cfg["time_col"]
-    cats = list(cfg["profile"]["categorical"]) + list(cfg["event"]["categorical"])
-    nums = list(cfg["profile"]["numeric"]) + list(cfg["event"]["numeric"])
+    schema = yaml.safe_load(open(cfg.schema))
+    id_col, time_col = schema["id_col"], schema["time_col"]
+    cats = list(schema["profile"]["categorical"]) + list(schema["event"]["categorical"])
+    nums = list(schema["profile"]["numeric"]) + list(schema["event"]["numeric"])
 
-    storage.ensure_auth(args.embeddings, args.key)
-    emb = storage.read_parquet(args.embeddings)
-    panel = storage.read_parquet(args.panel)
+    storage.ensure_auth(cfg.embeddings, cfg.key)
+    emb = storage.read_parquet(cfg.embeddings)
+    panel = storage.read_parquet(cfg.panel)
     ecols = [c for c in emb.columns if c.startswith("e") and c[1:].isdigit()]
     print(f"embeddings: {len(emb):,} loans x {len(ecols)} dims; panel {len(panel):,} rows", flush=True)
 
     # 1) forward-default label
-    defaulted = forward_default_loans(panel, id_col, time_col, args.label_col, args.cutoff,
-                                      args.horizon_months)
+    defaulted = forward_default_loans(panel, id_col, time_col, cfg.task.label_col, cutoff, horizon)
     emb["y"] = emb[id_col].isin(defaulted).astype(int)
 
     # 2) baseline feature snapshot as-of cutoff
-    feats = features_asof(panel, id_col, time_col, cats + nums, args.cutoff)
+    feats = features_asof(panel, id_col, time_col, cats + nums, cutoff)
     df = emb.merge(feats, left_on=id_col, right_index=True, how="left").reset_index(drop=True)
 
-    # 3) loan-disjoint split (hash on id — reproducible)
-    rng = np.random.default_rng(42)
-    is_test = rng.random(len(df)) < args.test_frac   # one row per loan -> loan-disjoint
+    # 3) loan-disjoint split (seeded rng — reproducible)
+    rng = np.random.default_rng(cfg.seed)
+    is_test = rng.random(len(df)) < cfg.split.test_frac   # one row per loan -> loan-disjoint
     tr, te = df[~is_test], df[is_test]
     print(f"split: train {len(tr):,} ({tr.y.mean()*100:.2f}% default) | "
           f"test {len(te):,} ({te.y.mean()*100:.2f}% default)", flush=True)
@@ -127,9 +122,9 @@ def main() -> None:
     ytr, yte = tr.y.to_numpy(), te.y.to_numpy()
 
     results = []
-    results.append(("features (XGB)", *_score(_xgb(args.device), Xtr_f, ytr, Xte_f, yte)))
-    results.append(("FM embeddings (XGB)", *_score(_xgb(args.device), Xtr_e, ytr, Xte_e, yte)))
-    results.append(("combined (XGB)", *_score(_xgb(args.device), Xtr_c, ytr, Xte_c, yte)))
+    results.append(("features (XGB)", *_score(_xgb(cfg.xgb_device), Xtr_f, ytr, Xte_f, yte)))
+    results.append(("FM embeddings (XGB)", *_score(_xgb(cfg.xgb_device), Xtr_e, ytr, Xte_e, yte)))
+    results.append(("combined (XGB)", *_score(_xgb(cfg.xgb_device), Xtr_c, ytr, Xte_c, yte)))
     sc = StandardScaler().fit(Xtr_e)
     lr = LogisticRegression(max_iter=1000, class_weight="balanced")
     results.append(("FM embeddings (linear probe)",
@@ -137,18 +132,19 @@ def main() -> None:
 
     base_roc = results[0][1]
     print("\n=== Downstream: default within "
-          f"{args.horizon_months}mo of {args.cutoff} (held-out loans) ===")
+          f"{horizon}mo of {cutoff} (held-out loans) ===")
     print(f"  {'model':<30}{'ROC':>8}{'PR-AUC':>9}{'dROC vs feats':>15}")
     for name, roc, pr in results:
         print(f"  {name:<30}{roc:>8.4f}{pr:>9.4f}{roc-base_roc:>+15.4f}")
 
-    if args.report:
-        rep = Path(args.report)
+    if cfg.get_path("report"):
+        rep = Path(cfg.report)
         rep.parent.mkdir(parents=True, exist_ok=True)
         lines = [
             "# Fannie Mae — FM Downstream Eval (loan-holdout probe)", "",
-            f"Observed at **{args.cutoff}**, label = default within **{args.horizon_months} months** "
-            f"after. {len(df):,} performing loans; loan-disjoint {int(args.test_frac*100)}% held out. "
+            f"Observed at **{cutoff}**, label = default within **{horizon} months** "
+            f"after. {len(df):,} performing loans; loan-disjoint "
+            f"{int(cfg.split.test_frac*100)}% held out. "
             "Features = tokenizer profile+event fields as-of cutoff (same info the FM saw).", "",
             "| model | ROC-AUC | PR-AUC | dROC vs features |", "|---|--:|--:|--:|",
             *[f"| {n} | {roc:.4f} | {pr:.4f} | {roc-base_roc:+.4f} |" for n, roc, pr in results],

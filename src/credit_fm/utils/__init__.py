@@ -3,7 +3,7 @@
 """Cross-cutting utilities.
 """
 
-from .config import load_config
+from .config import Config, load_config, parse_cli, summarize
 from .reproducibility import set_seed
 
-__all__ = ['load_config', 'set_seed']
+__all__ = ['Config', 'load_config', 'parse_cli', 'set_seed', 'summarize']
