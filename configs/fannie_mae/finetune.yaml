@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 finevals.ai and contributors.
+#
+# Fine-tune the pretrained FM on forward default (PRAGMA adaptation ladder).
+#
+#   python scripts/finetune.py -c configs/fannie_mae/finetune.yaml                 # lora (default)
+#   python scripts/finetune.py -c configs/fannie_mae/finetune.yaml --mode frozen --report reports/ft_frozen.md
+#   python scripts/finetune.py -c configs/fannie_mae/finetune.yaml --mode full --report reports/ft_full.md
+
+include: common.yaml
+
+checkpoint: ${paths.runs}/m3_full.pt
+panel: ${paths.processed}/train.parquet
+
+task:
+  cutoff: "2016-12-31"
+  horizon_months: 12
+  label_col: default_event
+  gate_col: is_performing
+
+mode: lora                 # frozen | lora | full
+lora:
+  rank: 8                  # PRAGMA default (r=8)
+  alpha: 16
+
+train:
+  epochs: 3
+  batch_size: 128
+  lr: null                 # null = per-mode default (frozen 1e-3, lora 5e-4, full 2e-5)
+  weight_decay: 0.01
+  grad_clip: 1.0
+
+split:
+  test_frac: 0.3
+
+runtime:
+  device: null
+  bf16: true
+
+limit: null
+report: reports/ft_lora.md

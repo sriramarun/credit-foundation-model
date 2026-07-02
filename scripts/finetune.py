@@ -11,13 +11,21 @@ pretrained weights to the label, three ways, and reports test ROC/PR against the
   (cheap adaptation; the standard FM-efficiency path).
 * ``full``   — fine-tune the whole encoder + head at a low LR (the strongest adaptation).
 
-Observation + label match the baseline: observe at ``--cutoff`` (performing gate, history <= cutoff,
-no leakage), label = default within ``--horizon-months``. Class imbalance handled by weighted loss.
+Observation + label match the baseline: observe at ``task.cutoff`` (performing gate, history <=
+cutoff, no leakage), label = default within ``task.horizon_months``. Class imbalance handled by
+weighted loss.
+
+Config-driven (recipe: ``configs/fannie_mae/finetune.yaml``)::
+
+    python scripts/finetune.py -c configs/fannie_mae/finetune.yaml                 # lora (default)
+    python scripts/finetune.py -c configs/fannie_mae/finetune.yaml \
+        --mode frozen --report reports/ft_frozen.md
+    python scripts/finetune.py -c configs/fannie_mae/finetune.yaml \
+        --mode full --train.lr 1e-5 --report reports/ft_full.md
 """
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 
 import fsspec
@@ -33,6 +41,7 @@ from credit_fm.data.encode import encode_panel
 from credit_fm.models import CreditFoundationModel
 from credit_fm.tokenizer import KVTTokenizer
 from credit_fm.utils import storage
+from credit_fm.utils.config import parse_cli, summarize
 from credit_fm.utils.reproducibility import set_seed
 
 _KEYS = ("input_ids", "event_index", "field_type", "branch")
@@ -136,57 +145,38 @@ def predict_full(model, samples, collate, device, bsz, use_amp):
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--panel", required=True)
-    ap.add_argument("--checkpoint", required=True)
-    ap.add_argument("--tokenizer", default="configs/fannie_mae/tokenizer.json")
-    ap.add_argument("--config", default="configs/fannie_mae/tokenizer.yaml")
-    ap.add_argument("--cutoff", required=True)
-    ap.add_argument("--horizon-months", type=int, default=12)
-    ap.add_argument("--gate-col", default="is_performing")
-    ap.add_argument("--label-col", default="default_event")
-    ap.add_argument("--mode", choices=["frozen", "lora", "full"], default="frozen")
-    ap.add_argument("--lora-rank", type=int, default=8)
-    ap.add_argument("--lora-alpha", type=int, default=16)
-    ap.add_argument("--epochs", type=int, default=3)
-    ap.add_argument("--batch-size", type=int, default=128)
-    ap.add_argument("--lr", type=float, default=None, help="default per mode")
-    ap.add_argument("--weight-decay", type=float, default=0.01)
-    ap.add_argument("--grad-clip", type=float, default=1.0)
-    ap.add_argument("--test-frac", type=float, default=0.3)
-    ap.add_argument("--device", default=None)
-    ap.add_argument("--bf16", action="store_true")
-    ap.add_argument("--limit", type=int, default=None)
-    ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--report", default=None)
-    ap.add_argument("--key", default=storage.GCS_DEFAULT_KEY)
-    args = ap.parse_args()
+    cfg = parse_cli(__doc__, default_config="configs/fannie_mae/finetune.yaml")
+    print(f"config: {cfg.config_path}\n"
+          f"{summarize(cfg, 'checkpoint', 'panel', 'task', 'mode', 'lora', 'train', 'split', 'report')}",
+          flush=True)
+    if cfg.mode not in ("frozen", "lora", "full"):
+        raise SystemExit(f"mode must be frozen|lora|full, got '{cfg.mode}'")
 
-    set_seed(args.seed)
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    use_amp = args.bf16 and device.startswith("cuda")
-    lr = args.lr or {"frozen": 1e-3, "lora": 5e-4, "full": 2e-5}[args.mode]
+    set_seed(cfg.seed)
+    device = cfg.runtime.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    use_amp = cfg.runtime.bf16 and device.startswith("cuda")
+    epochs, bsz = cfg.train.epochs, cfg.train.batch_size
+    lr = cfg.train.lr or {"frozen": 1e-3, "lora": 5e-4, "full": 2e-5}[cfg.mode]
+    cutoff, horizon = cfg.task.cutoff, cfg.task.horizon_months
 
-    cfg = yaml.safe_load(open(args.config))
-    id_col, time_col = cfg["id_col"], cfg["time_col"]
-    tok = KVTTokenizer.load(args.tokenizer)
-    model, _ = load_checkpoint(args.checkpoint, args.key)
+    schema = yaml.safe_load(open(cfg.schema))
+    id_col, time_col = schema["id_col"], schema["time_col"]
+    tok = KVTTokenizer.load(cfg.tokenizer)
+    model, _ = load_checkpoint(cfg.checkpoint, cfg.key)
 
-    storage.ensure_auth(args.panel, args.key)
-    panel = storage.read_parquet(args.panel)
-    defaulted = forward_default_loans(panel, id_col, time_col, args.label_col, args.cutoff,
-                                      args.horizon_months)
-    obs = observe_panel(panel, id_col, time_col, args.cutoff, args.gate_col)
-    if args.limit:
-        keep = obs[id_col].drop_duplicates().head(args.limit)
+    storage.ensure_auth(cfg.panel, cfg.key)
+    panel = storage.read_parquet(cfg.panel)
+    defaulted = forward_default_loans(panel, id_col, time_col, cfg.task.label_col, cutoff, horizon)
+    obs = observe_panel(panel, id_col, time_col, cutoff, cfg.task.gate_col)
+    if cfg.limit:
+        keep = obs[id_col].drop_duplicates().head(cfg.limit)
         obs = obs[obs[id_col].isin(keep)]
     shard = encode_panel(tok, obs)
     samples, y = build_samples(shard, defaulted, id_col)
-    print(f"loans {len(y):,} | default rate {y.mean()*100:.2f}% | mode={args.mode} lr={lr}", flush=True)
+    print(f"loans {len(y):,} | default rate {y.mean()*100:.2f}% | mode={cfg.mode} lr={lr}", flush=True)
 
-    rng = np.random.default_rng(args.seed)
-    is_test = rng.random(len(samples)) < args.test_frac
+    rng = np.random.default_rng(cfg.seed)
+    is_test = rng.random(len(samples)) < cfg.split.test_frac
     tr_idx = np.flatnonzero(~is_test)
     te_idx = np.flatnonzero(is_test)
     tr_samples = [samples[i] for i in tr_idx]
@@ -200,32 +190,32 @@ def main() -> None:
     collate = MLMCollator(vocab_size=tok.vocab_size, mask=False)
     model.to(device)
 
-    if args.mode == "frozen":
+    if cfg.mode == "frozen":
         for p in model.parameters():
             p.requires_grad = False
         head = model.classification_head
         for p in head.parameters():
             p.requires_grad = True
-        etr = embed_all(model, tr_samples, collate, device, args.batch_size, use_amp)
-        ete = embed_all(model, te_samples, collate, device, args.batch_size, use_amp)
+        etr = embed_all(model, tr_samples, collate, device, bsz, use_amp)
+        ete = embed_all(model, te_samples, collate, device, bsz, use_amp)
         ytr_t = torch.tensor(y_tr, device=device)
         opt = torch.optim.Adam(head.parameters(), lr=lr)
         head.train()
-        for ep in range(args.epochs):
+        for ep in range(epochs):
             order = torch.randperm(len(etr), device=device)
-            for i in range(0, len(etr), args.batch_size):
-                idx = order[i:i + args.batch_size]
+            for i in range(0, len(etr), bsz):
+                idx = order[i:i + bsz]
                 loss = celoss(head(etr[idx]), ytr_t[idx])
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
                 opt.step()
-            print(f"  epoch {ep+1}/{args.epochs}  loss {loss.item():.4f}", flush=True)
+            print(f"  epoch {ep+1}/{epochs}  loss {loss.item():.4f}", flush=True)
         head.eval()
         with torch.no_grad():
             probs = head(ete).float().softmax(-1)[:, 1].cpu().numpy()
     else:
-        if args.mode == "lora":
-            apply_lora(model, args.lora_rank, args.lora_alpha)
+        if cfg.mode == "lora":
+            apply_lora(model, cfg.lora.rank, cfg.lora.alpha)
             model.to(device)
             for p in model.parameters():
                 p.requires_grad = False
@@ -235,38 +225,38 @@ def main() -> None:
         params = [p for p in model.parameters() if p.requires_grad]
         n_train = sum(p.numel() for p in params)
         print(f"  trainable params: {n_train/1e6:.2f}M", flush=True)
-        opt = torch.optim.AdamW(params, lr=lr, weight_decay=args.weight_decay)
+        opt = torch.optim.AdamW(params, lr=lr, weight_decay=cfg.train.weight_decay)
         ytr_t = torch.tensor(y_tr, device=device)
         model.train()
-        for ep in range(args.epochs):
+        for ep in range(epochs):
             order = np.random.default_rng(ep).permutation(len(tr_samples))
             last = 0.0
-            for i in range(0, len(order), args.batch_size):
-                idx = order[i:i + args.batch_size]
+            for i in range(0, len(order), bsz):
+                idx = order[i:i + bsz]
                 b = _to_device(collate([tr_samples[j] for j in idx]), device)
                 yb = ytr_t[torch.tensor(idx, device=device)]
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
                     loss = celoss(model.classify(b), yb)
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
-                if args.grad_clip:
-                    torch.nn.utils.clip_grad_norm_(params, args.grad_clip)
+                if cfg.train.grad_clip:
+                    torch.nn.utils.clip_grad_norm_(params, cfg.train.grad_clip)
                 opt.step()
                 last = loss.item()
-            print(f"  epoch {ep+1}/{args.epochs}  loss {last:.4f}", flush=True)
-        probs = predict_full(model, te_samples, collate, device, args.batch_size, use_amp)
+            print(f"  epoch {ep+1}/{epochs}  loss {last:.4f}", flush=True)
+        probs = predict_full(model, te_samples, collate, device, bsz, use_amp)
 
     roc = roc_auc_score(y_te, probs)
     pr = average_precision_score(y_te, probs)
-    print(f"\n=== Fine-tune ({args.mode}) — default within {args.horizon_months}mo of {args.cutoff} ===")
+    print(f"\n=== Fine-tune ({cfg.mode}) — default within {horizon}mo of {cutoff} ===")
     print(f"  test: {len(y_te):,} loans, {y_te.mean()*100:.2f}% default")
     print(f"  ROC-AUC {roc:.4f} | PR-AUC {pr:.4f}   (features bar 0.746)")
 
-    if args.report:
-        rep = Path(args.report)
+    if cfg.get_path("report"):
+        rep = Path(cfg.report)
         rep.parent.mkdir(parents=True, exist_ok=True)
         rep.write_text(
-            f"# FM fine-tune ({args.mode}) — default within {args.horizon_months}mo of {args.cutoff}\n\n"
+            f"# FM fine-tune ({cfg.mode}) — default within {horizon}mo of {cutoff}\n\n"
             f"Test {len(y_te):,} loans ({y_te.mean()*100:.2f}% default), loan-disjoint.\n\n"
             f"| metric | value |\n|---|--:|\n| ROC-AUC | {roc:.4f} |\n| PR-AUC | {pr:.4f} |\n"
             f"| features bar (ROC) | 0.746 |\n")
