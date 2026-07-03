@@ -136,7 +136,8 @@ def main() -> None:
         "code_commit": _git_commit(),
         "config": cfg.to_dict(),                       # lineage
     }
-    storage.write_text(json.dumps(meta, indent=2), storage.join(out, "splits.meta.json"))
+    storage.write_text(json.dumps(meta, indent=2, default=str),
+                       storage.join(out, "splits.meta.json"))
     print(f"Wrote splits + splits.csv + splits.meta.json to {out}")
 
 

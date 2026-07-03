@@ -22,6 +22,7 @@ Features (PyYAML only — no hydra/omegaconf dependency):
 from __future__ import annotations
 
 import argparse
+import datetime
 import re
 from pathlib import Path
 from typing import Any, Sequence
@@ -132,11 +133,24 @@ def parse_overrides(tokens: Sequence[str]) -> dict[str, Any]:
     return out
 
 
+def _normalize(node: Any) -> Any:
+    """YAML parses unquoted ISO dates into ``datetime.date`` objects; coerce them back to
+    strings so configs stay plain-JSON-serializable (checkpoint/manifest lineage)."""
+    if isinstance(node, dict):
+        return {k: _normalize(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_normalize(v) for v in node]
+    if isinstance(node, (datetime.date, datetime.datetime)):
+        return node.isoformat()
+    return node
+
+
 def load_config(path: str | Path, overrides: dict[str, Any] | None = None) -> Config:
     """Load a recipe: includes -> CLI overrides -> ``${...}`` interpolation."""
     cfg = _load_yaml(Path(path).resolve())
     for dotted, value in (overrides or {}).items():
         _set_path(cfg, dotted, value)
+    cfg = _normalize(cfg)
     for _ in range(_MAX_PASSES):
         resolved = _interpolate(cfg, cfg)
         if resolved == cfg:
