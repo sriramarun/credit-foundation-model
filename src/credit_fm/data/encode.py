@@ -94,7 +94,8 @@ def _encode_shard(task):
 
 
 def encode_panel_parallel(tokenizer, tokenizer_path: str, panel: pd.DataFrame, *,
-                          workers: int = 0, key=None, shard_size: int = 50_000) -> pd.DataFrame:
+                          workers: int = 0, key=None, shard_size: int = 50_000,
+                          engine: str = "cpu") -> pd.DataFrame:
     """One-row-per-loan encode of ``panel`` using the shard worker pool; returns one DataFrame.
 
     The in-process ``encode_panel`` is fine for thousands of loans but takes hours for millions
@@ -102,6 +103,9 @@ def encode_panel_parallel(tokenizer, tokenizer_path: str, panel: pd.DataFrame, *
     via a local temp dir and concatenates the shards. ``workers <= 1`` (or a panel smaller than
     one shard) falls back to ``encode_panel``. Row order is not preserved.
     """
+    if engine in ("vector", "gpu"):
+        from credit_fm.tokenizer.fast_encode import encode_panel_fast
+        return encode_panel_fast(tokenizer, panel, gpu=(engine == "gpu"))
     if not workers or workers <= 1 or panel[tokenizer.id_col].nunique() <= shard_size:
         return encode_panel(tokenizer, panel)
     import shutil

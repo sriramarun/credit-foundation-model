@@ -40,5 +40,6 @@ split:
   test_frac: 0.3           # unused in OOT mode (calendar split governs); kept for fallback
 
 workers: 32
+engine: cpu                # cpu | vector | gpu (RAPIDS cuDF/CuPy)
 features_bar: 0.784        # recent-OOT XGB bar (train 2000-2022, test 2023-25, no leakage)
 report: reports/m5_oot_ft_lora.md

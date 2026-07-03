@@ -13,4 +13,5 @@ input: ${paths.processed}/${split}.parquet
 output: ${paths.encoded}/${split}
 
 shard_size: 50000        # loans per shard
-workers: 32              # processes (spawn); 0/1 = in-process
+workers: 32              # cpu engine: processes (spawn); 0/1 = in-process
+engine: cpu              # cpu (worker pool) | vector (vectorized NumPy) | gpu (RAPIDS cuDF/CuPy)

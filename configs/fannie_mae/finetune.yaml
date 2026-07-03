@@ -37,6 +37,7 @@ split:
   test_frac: 0.3
 
 workers: 32                # parallel observation encoding (was the 5.5h serial stall)
+engine: cpu                # cpu | vector | gpu (RAPIDS cuDF/CuPy)
 features_bar: null         # features-XGB ROC from evaluate_downstream on the SAME population
 
 runtime:

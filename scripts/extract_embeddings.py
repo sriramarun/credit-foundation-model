@@ -90,7 +90,8 @@ def main() -> None:
     carried = panel.groupby(tok.id_col)[carry].first() if carry else None
 
     shard = encode_panel_parallel(tok, cfg.tokenizer, panel,         # per-loan token arrays
-                                  workers=cfg.get_path("workers", 0), key=cfg.key)
+                                  workers=cfg.get_path("workers", 0), key=cfg.key,
+                                  engine=cfg.get_path("engine", "cpu"))
     collate = MLMCollator(vocab_size=tok.vocab_size, mask=False)      # no masking — inference
     use_amp = cfg.runtime.bf16 and device.startswith("cuda")
 
