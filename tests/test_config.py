@@ -77,3 +77,15 @@ def test_to_dict_roundtrip(tree):
     d = cfg.to_dict()
     assert isinstance(d, dict) and not isinstance(d["model"], Config)
     assert d["model"]["dim"] == 384
+
+
+def test_yaml_dates_normalize_to_iso_strings(tmp_path):
+    import json
+
+    import yaml as _yaml
+    (tmp_path / "d.yaml").write_text("cutoff: 2022-12-31\nnested:\n  dates: [2016-12-31, 2017-12-31]\n")
+    cfg = load_config(tmp_path / "d.yaml", {"reporting_max": _yaml.safe_load("2022-12-31")})
+    assert cfg.cutoff == "2022-12-31" and isinstance(cfg.cutoff, str)
+    assert cfg.nested.dates == ["2016-12-31", "2017-12-31"]
+    assert cfg.reporting_max == "2022-12-31"
+    json.dumps(cfg.to_dict())
