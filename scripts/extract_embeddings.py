@@ -27,7 +27,7 @@ import pandas as pd
 import torch
 
 from credit_fm.data.collators import MLMCollator
-from credit_fm.data.encode import encode_panel
+from credit_fm.data.encode import encode_panel_parallel
 from credit_fm.models import CreditFoundationModel
 from credit_fm.tokenizer import KVTTokenizer
 from credit_fm.utils import storage
@@ -89,7 +89,8 @@ def main() -> None:
     carry = list(cfg.get_path("carry") or [])
     carried = panel.groupby(tok.id_col)[carry].first() if carry else None
 
-    shard = encode_panel(tok, panel)                                  # per-loan token arrays
+    shard = encode_panel_parallel(tok, cfg.tokenizer, panel,         # per-loan token arrays
+                                  workers=cfg.get_path("workers", 0), key=cfg.key)
     collate = MLMCollator(vocab_size=tok.vocab_size, mask=False)      # no masking — inference
     use_amp = cfg.runtime.bf16 and device.startswith("cuda")
 
@@ -108,10 +109,9 @@ def main() -> None:
             embs.append(model.extract_embeddings(batch).float().cpu().numpy())
     emb = np.concatenate(embs, axis=0)
 
-    out = pd.DataFrame({tok.id_col: shard[tok.id_col].to_numpy()})
-    out["n_events"] = shard["n_events"].to_numpy()
-    for i in range(dim):
-        out[f"e{i}"] = emb[:, i]
+    out = pd.DataFrame({tok.id_col: shard[tok.id_col].to_numpy(),
+                        "n_events": shard["n_events"].to_numpy()})
+    out = pd.concat([out, pd.DataFrame(emb, columns=[f"e{i}" for i in range(dim)])], axis=1)
     if carried is not None:
         out = out.merge(carried, left_on=tok.id_col, right_index=True, how="left")
 
