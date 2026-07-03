@@ -12,8 +12,14 @@ pretrained weights to the label, three ways, and reports test ROC/PR against the
 * ``full``   — fine-tune the whole encoder + head at a low LR (the strongest adaptation).
 
 Observation + label match the baseline: observe at ``task.cutoff`` (performing gate, history <=
-cutoff, no leakage), label = default within ``task.horizon_months``. Class imbalance handled by
-weighted loss.
+cutoff, no leakage), label = default within ``task.horizon_months``.
+
+Class imbalance is handled explicitly (rare-event training destabilizes otherwise — the M4 run
+collapsed at 0.11% base rate with raw inverse-frequency weighting): ``train.neg_per_pos``
+downsamples FIT negatives (monitor/test sets untouched, so ranking metrics stay honest;
+predicted probabilities become uncalibrated by design), and ``train.pos_weight_cap`` bounds the
+loss weight. A 10% monitoring split at the TRUE class balance reports val ROC every epoch, so a
+collapsing run is visible after epoch 1.
 
 Config-driven (recipe: ``configs/fannie_mae/finetune.yaml``)::
 
@@ -37,7 +43,7 @@ import yaml
 from sklearn.metrics import average_precision_score, roc_auc_score
 
 from credit_fm.data.collators import MLMCollator
-from credit_fm.data.encode import encode_panel
+from credit_fm.data.encode import encode_panel_parallel
 from credit_fm.models import CreditFoundationModel
 from credit_fm.tokenizer import KVTTokenizer
 from credit_fm.utils import storage
@@ -108,6 +114,10 @@ def apply_lora(model, r, alpha):
         setattr(mod, cname, LoRALinear(child, r, alpha))
 
 
+def _safe_roc(y, p):
+    return roc_auc_score(y, p) if 0 < y.sum() < len(y) else float("nan")
+
+
 def build_samples(shard, defaulted, id_col):
     samples, ys = [], []
     for _, r in shard.iterrows():
@@ -171,24 +181,47 @@ def main() -> None:
     if cfg.limit:
         keep = obs[id_col].drop_duplicates().head(cfg.limit)
         obs = obs[obs[id_col].isin(keep)]
-    shard = encode_panel(tok, obs)
+    shard = encode_panel_parallel(tok, cfg.tokenizer, obs,
+                                  workers=cfg.get_path("workers", 0), key=cfg.key)
     samples, y = build_samples(shard, defaulted, id_col)
     print(f"loans {len(y):,} | default rate {y.mean()*100:.2f}% | mode={cfg.mode} lr={lr}", flush=True)
 
     rng = np.random.default_rng(cfg.seed)
     is_test = rng.random(len(samples)) < cfg.split.test_frac
-    tr_idx = np.flatnonzero(~is_test)
     te_idx = np.flatnonzero(is_test)
-    tr_samples = [samples[i] for i in tr_idx]
     te_samples = [samples[i] for i in te_idx]
-    y_tr, y_te = y[tr_idx], y[te_idx]
+    y_te = y[te_idx]
 
-    n_pos = max(int(y_tr.sum()), 1)
-    pos_w = (len(y_tr) - n_pos) / n_pos
-    weight = torch.tensor([1.0, pos_w], device=device)
+    # 10% monitoring split at the TRUE class balance — val ROC is printed every epoch
+    perm = rng.permutation(np.flatnonzero(~is_test))
+    n_va = max(int(0.1 * len(perm)), 1)
+    va_idx, fit_idx = perm[:n_va], perm[n_va:]
+    va_samples = [samples[i] for i in va_idx]
+    y_va = y[va_idx]
+    fit_samples = [samples[i] for i in fit_idx]
+    y_fit = y[fit_idx]
+
+    # downsample FIT negatives only (ranking metrics honest; probabilities uncalibrated by design)
+    npp = cfg.get_path("train.neg_per_pos", 0)
+    if npp:
+        pos = np.flatnonzero(y_fit == 1)
+        neg = np.flatnonzero(y_fit == 0)
+        keep = rng.permutation(np.concatenate(
+            [pos, rng.choice(neg, min(len(neg), len(pos) * npp), replace=False)]))
+        fit_samples = [fit_samples[i] for i in keep]
+        y_fit = y_fit[keep]
+
+    n_pos = max(int(y_fit.sum()), 1)
+    pos_w = (len(y_fit) - n_pos) / n_pos
+    cap = cfg.get_path("train.pos_weight_cap")
+    if cap:
+        pos_w = min(pos_w, float(cap))
+    weight = torch.tensor([1.0, float(pos_w)], device=device)
     celoss = nn.CrossEntropyLoss(weight=weight)
     collate = MLMCollator(vocab_size=tok.vocab_size, mask=False)
     model.to(device)
+    print(f"  fit {len(y_fit):,} ({n_pos:,} pos, neg_per_pos={npp or 'all'}) | "
+          f"monitor {len(y_va):,} | test {len(y_te):,} | pos_weight {pos_w:.0f}", flush=True)
 
     if cfg.mode == "frozen":
         for p in model.parameters():
@@ -196,21 +229,28 @@ def main() -> None:
         head = model.classification_head
         for p in head.parameters():
             p.requires_grad = True
-        etr = embed_all(model, tr_samples, collate, device, bsz, use_amp)
+        efit = embed_all(model, fit_samples, collate, device, bsz, use_amp)
+        eva = embed_all(model, va_samples, collate, device, bsz, use_amp)
         ete = embed_all(model, te_samples, collate, device, bsz, use_amp)
-        ytr_t = torch.tensor(y_tr, device=device)
+        yfit_t = torch.tensor(y_fit, device=device)
         opt = torch.optim.Adam(head.parameters(), lr=lr)
-        head.train()
         for ep in range(epochs):
-            order = torch.randperm(len(etr), device=device)
-            for i in range(0, len(etr), bsz):
+            head.train()
+            order = torch.randperm(len(efit), device=device)
+            tot, nb = 0.0, 0
+            for i in range(0, len(efit), bsz):
                 idx = order[i:i + bsz]
-                loss = celoss(head(etr[idx]), ytr_t[idx])
+                loss = celoss(head(efit[idx]), yfit_t[idx])
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
                 opt.step()
-            print(f"  epoch {ep+1}/{epochs}  loss {loss.item():.4f}", flush=True)
-        head.eval()
+                tot += loss.item()
+                nb += 1
+            head.eval()
+            with torch.no_grad():
+                pva = head(eva).float().softmax(-1)[:, 1].cpu().numpy()
+            print(f"  epoch {ep+1}/{epochs}  avg loss {tot/max(nb,1):.4f}  "
+                  f"val ROC {_safe_roc(y_va, pva):.4f}", flush=True)
         with torch.no_grad():
             probs = head(ete).float().softmax(-1)[:, 1].cpu().numpy()
     else:
@@ -226,15 +266,15 @@ def main() -> None:
         n_train = sum(p.numel() for p in params)
         print(f"  trainable params: {n_train/1e6:.2f}M", flush=True)
         opt = torch.optim.AdamW(params, lr=lr, weight_decay=cfg.train.weight_decay)
-        ytr_t = torch.tensor(y_tr, device=device)
-        model.train()
+        yfit_t = torch.tensor(y_fit, device=device)
         for ep in range(epochs):
-            order = np.random.default_rng(ep).permutation(len(tr_samples))
-            last = 0.0
+            model.train()
+            order = np.random.default_rng(ep).permutation(len(fit_samples))
+            tot, nb = 0.0, 0
             for i in range(0, len(order), bsz):
                 idx = order[i:i + bsz]
-                b = _to_device(collate([tr_samples[j] for j in idx]), device)
-                yb = ytr_t[torch.tensor(idx, device=device)]
+                b = _to_device(collate([fit_samples[j] for j in idx]), device)
+                yb = yfit_t[torch.tensor(idx, device=device)]
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
                     loss = celoss(model.classify(b), yb)
                 opt.zero_grad(set_to_none=True)
@@ -242,24 +282,32 @@ def main() -> None:
                 if cfg.train.grad_clip:
                     torch.nn.utils.clip_grad_norm_(params, cfg.train.grad_clip)
                 opt.step()
-                last = loss.item()
-            print(f"  epoch {ep+1}/{epochs}  loss {last:.4f}", flush=True)
+                tot += loss.item()
+                nb += 1
+            pva = predict_full(model, va_samples, collate, device, bsz, use_amp)
+            print(f"  epoch {ep+1}/{epochs}  avg loss {tot/max(nb,1):.4f}  "
+                  f"val ROC {_safe_roc(y_va, pva):.4f}", flush=True)
         probs = predict_full(model, te_samples, collate, device, bsz, use_amp)
 
     roc = roc_auc_score(y_te, probs)
     pr = average_precision_score(y_te, probs)
+    bar = cfg.get_path("features_bar")
+    bar_txt = f"   (features bar {bar:.4f})" if bar else ""
     print(f"\n=== Fine-tune ({cfg.mode}) — default within {horizon}mo of {cutoff} ===")
     print(f"  test: {len(y_te):,} loans, {y_te.mean()*100:.2f}% default")
-    print(f"  ROC-AUC {roc:.4f} | PR-AUC {pr:.4f}   (features bar 0.746)")
+    print(f"  ROC-AUC {roc:.4f} | PR-AUC {pr:.4f}{bar_txt}")
 
     if cfg.get_path("report"):
         rep = Path(cfg.report)
         rep.parent.mkdir(parents=True, exist_ok=True)
+        bar_row = f"| features bar (ROC) | {bar:.4f} |\n" if bar else ""
         rep.write_text(
             f"# FM fine-tune ({cfg.mode}) — default within {horizon}mo of {cutoff}\n\n"
-            f"Test {len(y_te):,} loans ({y_te.mean()*100:.2f}% default), loan-disjoint.\n\n"
+            f"Test {len(y_te):,} loans ({y_te.mean()*100:.2f}% default), loan-disjoint; "
+            f"fit set neg_per_pos={cfg.get_path('train.neg_per_pos', 0) or 'all'}, "
+            f"pos_weight {pos_w:.0f}.\n\n"
             f"| metric | value |\n|---|--:|\n| ROC-AUC | {roc:.4f} |\n| PR-AUC | {pr:.4f} |\n"
-            f"| features bar (ROC) | 0.746 |\n")
+            + bar_row)
         print(f"wrote {rep}")
 
 

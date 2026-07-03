@@ -29,9 +29,15 @@ train:
   lr: null                 # null = per-mode default (frozen 1e-3, lora 5e-4, full 2e-5)
   weight_decay: 0.01
   grad_clip: 1.0
+  neg_per_pos: 20          # downsample FIT negatives to N x positives (0 = keep all);
+                           # rare-event stabilizer — monitor/test sets stay untouched
+  pos_weight_cap: 100      # bound the class weight (raw neg/pos was ~900 at 0.11% base rate)
 
 split:
   test_frac: 0.3
+
+workers: 32                # parallel observation encoding (was the 5.5h serial stall)
+features_bar: null         # features-XGB ROC from evaluate_downstream on the SAME population
 
 runtime:
   device: null

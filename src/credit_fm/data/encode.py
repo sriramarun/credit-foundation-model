@@ -93,6 +93,31 @@ def _encode_shard(task):
     return name, len(shard), int(shard["n_tokens"].sum())
 
 
+def encode_panel_parallel(tokenizer, tokenizer_path: str, panel: pd.DataFrame, *,
+                          workers: int = 0, key=None, shard_size: int = 50_000) -> pd.DataFrame:
+    """One-row-per-loan encode of ``panel`` using the shard worker pool; returns one DataFrame.
+
+    The in-process ``encode_panel`` is fine for thousands of loans but takes hours for millions
+    (it single-threads the tokenizer). This fans the work out across ``workers`` spawn processes
+    via a local temp dir and concatenates the shards. ``workers <= 1`` (or a panel smaller than
+    one shard) falls back to ``encode_panel``. Row order is not preserved.
+    """
+    if not workers or workers <= 1 or panel[tokenizer.id_col].nunique() <= shard_size:
+        return encode_panel(tokenizer, panel)
+    import shutil
+    import tempfile
+
+    from credit_fm.utils import storage
+    tmp = tempfile.mkdtemp(prefix="encode_obs_")
+    try:
+        names, _, _ = encode_to_shards(tokenizer, tokenizer_path, panel, tmp,
+                                       shard_size=shard_size, workers=workers, key=key)
+        return pd.concat([storage.read_parquet(storage.join(tmp, n)) for n in names],
+                         ignore_index=True)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def encode_to_shards(tokenizer, tokenizer_path: str, panel: pd.DataFrame, out_dir: str, *,
                      shard_size: int = 50_000, workers: int = 0, key=None, log=print):
     """Encode ``panel`` to sharded parquet under ``out_dir``; return ``(shard_names, n_loans, n_tokens)``.

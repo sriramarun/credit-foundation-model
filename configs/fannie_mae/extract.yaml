@@ -17,6 +17,7 @@ observe:
 
 carry: [origination_date]  # panel cols carried onto the embedding rows
 batch_size: 256
+workers: 32                # parallel observation encoding (was the 5.5h serial stall)
 limit: null
 
 runtime:
