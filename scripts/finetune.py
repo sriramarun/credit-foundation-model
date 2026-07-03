@@ -14,6 +14,17 @@ pretrained weights to the label, three ways, and reports test ROC/PR against the
 Observation + label match the baseline: observe at ``task.cutoff`` (performing gate, history <=
 cutoff, no leakage), label = default within ``task.horizon_months``.
 
+Two evaluation protocols:
+
+* **loan-holdout** (default) — one ``task.cutoff``; loans split randomly into train/test. Both
+  sides live in the same period, so this measures representation quality, not generalization
+  across time.
+* **calendar-OOT** — set ``task.train_cutoffs`` (past) + ``task.test_cutoffs`` (future). The head
+  trains on observations whose label windows end before the test era and is scored on later
+  cutoffs: train on the past, score the future — the honest deployment test. Loans observed in
+  both periods are hash-assigned wholly to one side (loan-disjoint), matching
+  ``build_oot_baseline.py`` so the features bar is apples-to-apples.
+
 Class imbalance is handled explicitly (rare-event training destabilizes otherwise — the M4 run
 collapsed at 0.11% base rate with raw inverse-frequency weighting): ``train.neg_per_pos``
 downsamples FIT negatives (monitor/test sets untouched, so ranking metrics stay honest;
@@ -32,6 +43,7 @@ Config-driven (recipe: ``configs/fannie_mae/finetune.yaml``)::
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 import fsspec
@@ -128,6 +140,19 @@ def build_samples(shard, defaulted, id_col):
     return samples, np.array(ys, dtype=np.int64)
 
 
+def cutoff_samples(tok, cfg, panel, id_col, time_col, cutoff, horizon):
+    """Observation samples + forward labels + loan ids for one cutoff."""
+    defaulted = forward_default_loans(panel, id_col, time_col, cfg.task.label_col, cutoff, horizon)
+    obs = observe_panel(panel, id_col, time_col, cutoff, cfg.task.gate_col)
+    if cfg.get_path("limit"):
+        keep = obs[id_col].drop_duplicates().head(cfg.limit)
+        obs = obs[obs[id_col].isin(keep)]
+    shard = encode_panel_parallel(tok, cfg.tokenizer, obs,
+                                  workers=cfg.get_path("workers", 0), key=cfg.key)
+    samples, y = build_samples(shard, defaulted, id_col)
+    return samples, y, shard[id_col].to_numpy()
+
+
 def _to_device(batch, device):
     return {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in batch.items()}
 
@@ -167,7 +192,7 @@ def main() -> None:
     use_amp = cfg.runtime.bf16 and device.startswith("cuda")
     epochs, bsz = cfg.train.epochs, cfg.train.batch_size
     lr = cfg.train.lr or {"frozen": 1e-3, "lora": 5e-4, "full": 2e-5}[cfg.mode]
-    cutoff, horizon = cfg.task.cutoff, cfg.task.horizon_months
+    cutoff, horizon = cfg.get_path("task.cutoff"), cfg.task.horizon_months
 
     schema = yaml.safe_load(open(cfg.schema))
     id_col, time_col = schema["id_col"], schema["time_col"]
@@ -176,30 +201,67 @@ def main() -> None:
 
     storage.ensure_auth(cfg.panel, cfg.key)
     panel = storage.read_parquet(cfg.panel)
-    defaulted = forward_default_loans(panel, id_col, time_col, cfg.task.label_col, cutoff, horizon)
-    obs = observe_panel(panel, id_col, time_col, cutoff, cfg.task.gate_col)
-    if cfg.limit:
-        keep = obs[id_col].drop_duplicates().head(cfg.limit)
-        obs = obs[obs[id_col].isin(keep)]
-    shard = encode_panel_parallel(tok, cfg.tokenizer, obs,
-                                  workers=cfg.get_path("workers", 0), key=cfg.key)
-    samples, y = build_samples(shard, defaulted, id_col)
-    print(f"loans {len(y):,} | default rate {y.mean()*100:.2f}% | mode={cfg.mode} lr={lr}", flush=True)
-
     rng = np.random.default_rng(cfg.seed)
-    is_test = rng.random(len(samples)) < cfg.split.test_frac
-    te_idx = np.flatnonzero(is_test)
-    te_samples = [samples[i] for i in te_idx]
-    y_te = y[te_idx]
+
+    test_cutoffs = cfg.get_path("task.test_cutoffs")
+    if test_cutoffs:
+        # ---- calendar-OOT: head trains on past cutoffs, is scored on future ones ----
+        train_cutoffs = [str(c) for c in cfg.task.train_cutoffs]
+        test_cutoffs = [str(c) for c in test_cutoffs]
+        when = f"{train_cutoffs[0]}..{train_cutoffs[-1]} -> {', '.join(test_cutoffs)}"
+        pool, y_parts, loan_parts = [], [], []
+        for co in train_cutoffs:
+            s, yy, lids = cutoff_samples(tok, cfg, panel, id_col, time_col, co, horizon)
+            pool += s
+            y_parts.append(yy)
+            loan_parts.append(lids)
+            print(f"  train cutoff {co}: {len(s):,} obs, {yy.mean()*100:.2f}% default", flush=True)
+        te_samples, yte_parts, te_loan_parts = [], [], []
+        for co in test_cutoffs:
+            s, yy, lids = cutoff_samples(tok, cfg, panel, id_col, time_col, co, horizon)
+            te_samples += s
+            yte_parts.append(yy)
+            te_loan_parts.append(lids)
+            print(f"  test cutoff {co}: {len(s):,} obs, {yy.mean()*100:.2f}% default", flush=True)
+        y_pool = np.concatenate(y_parts)
+        y_te = np.concatenate(yte_parts)
+        tr_loans = np.concatenate(loan_parts)
+        te_loans = np.concatenate(te_loan_parts)
+        # loan-disjoint guard: a loan observed in both eras goes wholly to one side (hash)
+        overlap = np.intersect1d(np.unique(tr_loans), np.unique(te_loans))
+        if len(overlap):
+            ov = pd.Series(overlap)
+            to_test = ov[pd.util.hash_pandas_object(ov, index=False).to_numpy() % 2 == 0].to_numpy()
+            keep_tr = ~np.isin(tr_loans, to_test)
+            keep_te = ~np.isin(te_loans, np.setdiff1d(overlap, to_test))
+            pool = [pool[i] for i in np.flatnonzero(keep_tr)]
+            y_pool = y_pool[keep_tr]
+            te_samples = [te_samples[i] for i in np.flatnonzero(keep_te)]
+            y_te = y_te[keep_te]
+            print(f"  loan-disjoint: {len(overlap):,} loans span both eras (hash-split)", flush=True)
+        print(f"obs train {len(y_pool):,} ({y_pool.mean()*100:.2f}%) | "
+              f"test {len(y_te):,} ({y_te.mean()*100:.2f}%) | mode={cfg.mode} lr={lr}", flush=True)
+    else:
+        # ---- single-cutoff loan-holdout ----
+        when = cutoff
+        samples, y, _ = cutoff_samples(tok, cfg, panel, id_col, time_col, cutoff, horizon)
+        print(f"loans {len(y):,} | default rate {y.mean()*100:.2f}% | mode={cfg.mode} lr={lr}",
+              flush=True)
+        is_test = rng.random(len(samples)) < cfg.split.test_frac
+        te_idx = np.flatnonzero(is_test)
+        te_samples = [samples[i] for i in te_idx]
+        y_te = y[te_idx]
+        pool = [samples[i] for i in np.flatnonzero(~is_test)]
+        y_pool = y[~is_test]
 
     # 10% monitoring split at the TRUE class balance — val ROC is printed every epoch
-    perm = rng.permutation(np.flatnonzero(~is_test))
+    perm = rng.permutation(len(pool))
     n_va = max(int(0.1 * len(perm)), 1)
     va_idx, fit_idx = perm[:n_va], perm[n_va:]
-    va_samples = [samples[i] for i in va_idx]
-    y_va = y[va_idx]
-    fit_samples = [samples[i] for i in fit_idx]
-    y_fit = y[fit_idx]
+    va_samples = [pool[i] for i in va_idx]
+    y_va = y_pool[va_idx]
+    fit_samples = [pool[i] for i in fit_idx]
+    y_fit = y_pool[fit_idx]
 
     # downsample FIT negatives only (ranking metrics honest; probabilities uncalibrated by design)
     npp = cfg.get_path("train.neg_per_pos", 0)
@@ -234,6 +296,7 @@ def main() -> None:
         ete = embed_all(model, te_samples, collate, device, bsz, use_amp)
         yfit_t = torch.tensor(y_fit, device=device)
         opt = torch.optim.Adam(head.parameters(), lr=lr)
+        best_roc, best_state = float("-inf"), None
         for ep in range(epochs):
             head.train()
             order = torch.randperm(len(efit), device=device)
@@ -249,8 +312,14 @@ def main() -> None:
             head.eval()
             with torch.no_grad():
                 pva = head(eva).float().softmax(-1)[:, 1].cpu().numpy()
-            print(f"  epoch {ep+1}/{epochs}  avg loss {tot/max(nb,1):.4f}  "
-                  f"val ROC {_safe_roc(y_va, pva):.4f}", flush=True)
+            v = _safe_roc(y_va, pva)
+            if v == v and v > best_roc:                       # nan-safe best-epoch tracking
+                best_roc, best_state = v, copy.deepcopy(head.state_dict())
+            print(f"  epoch {ep+1}/{epochs}  avg loss {tot/max(nb,1):.4f}  val ROC {v:.4f}",
+                  flush=True)
+        if best_state is not None:
+            head.load_state_dict(best_state)
+            print(f"  restored best epoch (val ROC {best_roc:.4f})", flush=True)
         with torch.no_grad():
             probs = head(ete).float().softmax(-1)[:, 1].cpu().numpy()
     else:
@@ -267,6 +336,7 @@ def main() -> None:
         print(f"  trainable params: {n_train/1e6:.2f}M", flush=True)
         opt = torch.optim.AdamW(params, lr=lr, weight_decay=cfg.train.weight_decay)
         yfit_t = torch.tensor(y_fit, device=device)
+        best_roc, best_state = float("-inf"), None
         for ep in range(epochs):
             model.train()
             order = np.random.default_rng(ep).permutation(len(fit_samples))
@@ -285,15 +355,21 @@ def main() -> None:
                 tot += loss.item()
                 nb += 1
             pva = predict_full(model, va_samples, collate, device, bsz, use_amp)
-            print(f"  epoch {ep+1}/{epochs}  avg loss {tot/max(nb,1):.4f}  "
-                  f"val ROC {_safe_roc(y_va, pva):.4f}", flush=True)
+            v = _safe_roc(y_va, pva)
+            if v == v and v > best_roc:                       # nan-safe best-epoch tracking
+                best_roc, best_state = v, copy.deepcopy(model.state_dict())
+            print(f"  epoch {ep+1}/{epochs}  avg loss {tot/max(nb,1):.4f}  val ROC {v:.4f}",
+                  flush=True)
+        if best_state is not None:
+            model.load_state_dict(best_state)
+            print(f"  restored best epoch (val ROC {best_roc:.4f})", flush=True)
         probs = predict_full(model, te_samples, collate, device, bsz, use_amp)
 
     roc = roc_auc_score(y_te, probs)
     pr = average_precision_score(y_te, probs)
     bar = cfg.get_path("features_bar")
     bar_txt = f"   (features bar {bar:.4f})" if bar else ""
-    print(f"\n=== Fine-tune ({cfg.mode}) — default within {horizon}mo of {cutoff} ===")
+    print(f"\n=== Fine-tune ({cfg.mode}) — default within {horizon}mo of {when} ===")
     print(f"  test: {len(y_te):,} loans, {y_te.mean()*100:.2f}% default")
     print(f"  ROC-AUC {roc:.4f} | PR-AUC {pr:.4f}{bar_txt}")
 
@@ -302,7 +378,7 @@ def main() -> None:
         rep.parent.mkdir(parents=True, exist_ok=True)
         bar_row = f"| features bar (ROC) | {bar:.4f} |\n" if bar else ""
         rep.write_text(
-            f"# FM fine-tune ({cfg.mode}) — default within {horizon}mo of {cutoff}\n\n"
+            f"# FM fine-tune ({cfg.mode}) — default within {horizon}mo of {when}\n\n"
             f"Test {len(y_te):,} loans ({y_te.mean()*100:.2f}% default), loan-disjoint; "
             f"fit set neg_per_pos={cfg.get_path('train.neg_per_pos', 0) or 'all'}, "
             f"pos_weight {pos_w:.0f}.\n\n"

@@ -85,6 +85,13 @@ def main() -> None:
 
     print(f"Loading {in_path} ...")
     panel = storage.read_parquet(in_path)
+    rmax = cfg.get_path("reporting_max")
+    if rmax:
+        dt = pd.to_datetime(panel[cfg.reporting_col], errors="coerce")
+        n0 = len(panel)
+        panel = panel[dt <= pd.to_datetime(str(rmax))]
+        print(f"reporting_max {rmax}: {n0:,} -> {len(panel):,} rows "
+              "(temporal cap — keeps the pretrain corpus blind to the OOT test era)")
     if cfg.id_col not in panel.columns:
         raise SystemExit(f"Column '{cfg.id_col}' not in panel. Available: {list(panel.columns)}")
 
