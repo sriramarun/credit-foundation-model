@@ -148,7 +148,8 @@ def cutoff_samples(tok, cfg, panel, id_col, time_col, cutoff, horizon):
         keep = obs[id_col].drop_duplicates().head(cfg.limit)
         obs = obs[obs[id_col].isin(keep)]
     shard = encode_panel_parallel(tok, cfg.tokenizer, obs,
-                                  workers=cfg.get_path("workers", 0), key=cfg.key)
+                                  workers=cfg.get_path("workers", 0), key=cfg.key,
+                                  engine=cfg.get_path("engine", "cpu"))
     samples, y = build_samples(shard, defaulted, id_col)
     return samples, y, shard[id_col].to_numpy()
 

@@ -21,13 +21,15 @@ import time
 
 from credit_fm.data.encode import encode_to_shards
 from credit_fm.tokenizer import KVTTokenizer
+from credit_fm.tokenizer.fast_encode import encode_panel_fast
 from credit_fm.utils import storage
 from credit_fm.utils.config import parse_cli, summarize
 
 
 def main() -> None:
     cfg = parse_cli(__doc__, default_config="configs/fannie_mae/encode.yaml")
-    print(f"config: {cfg.config_path}\n{summarize(cfg, 'split', 'input', 'output', 'shard_size', 'workers')}",
+    print(f"config: {cfg.config_path}\n"
+          f"{summarize(cfg, 'split', 'input', 'output', 'shard_size', 'workers', 'engine')}",
           flush=True)
 
     storage.ensure_auth(cfg.input, cfg.key)
@@ -39,9 +41,22 @@ def main() -> None:
     print(f"encoding {panel[tok.id_col].nunique():,} loans with workers={cfg.workers} ...", flush=True)
 
     t0 = time.time()
-    shards, n_loans, n_tokens = encode_to_shards(
-        tok, cfg.tokenizer, panel, cfg.output, shard_size=cfg.shard_size,
-        workers=cfg.workers, key=cfg.key)
+    engine = cfg.get_path("engine", "cpu")
+    if engine in ("vector", "gpu"):                    # vectorized (NumPy) / RAPIDS (cuDF+CuPy)
+        frame = encode_panel_fast(tok, panel, gpu=(engine == "gpu"))
+        shards = []
+        for i in range(0, len(frame), cfg.shard_size):
+            name = f"shard-{i // cfg.shard_size:05d}.parquet"
+            sub = frame.iloc[i:i + cfg.shard_size]
+            storage.write_parquet(sub, storage.join(cfg.output, name))
+            shards.append(name)
+            print(f"  wrote {name}  ({len(sub):,} loans, {int(sub['n_tokens'].sum()):,} tokens)",
+                  flush=True)
+        n_loans, n_tokens = len(frame), int(frame["n_tokens"].sum())
+    else:
+        shards, n_loans, n_tokens = encode_to_shards(
+            tok, cfg.tokenizer, panel, cfg.output, shard_size=cfg.shard_size,
+            workers=cfg.workers, key=cfg.key)
 
     manifest = {
         "tokenizer": cfg.tokenizer, "vocab_size": tok.vocab_size,

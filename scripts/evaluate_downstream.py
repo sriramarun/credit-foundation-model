@@ -117,25 +117,40 @@ def main() -> None:
     Xtr_f, cmap = encode_features(tr, cats, nums)
     Xte_f, _ = encode_features(te, cats, nums, cmap)
     Xtr_e, Xte_e = tr[ecols].to_numpy(), te[ecols].to_numpy()
-    Xtr_c = np.hstack([Xtr_f.to_numpy(), Xtr_e])
-    Xte_c = np.hstack([Xte_f.to_numpy(), Xte_e])
+
+    # blueprint recipe: PCA-compress embeddings before XGBoost sees them — raw 384 dims next to
+    # ~30 features dilute the tree splits; ~64 principal dims keep the signal, drop the noise
+    pca_dims = cfg.get_path("pca_dims")
+    emb_tag = "FM embeddings (XGB)"
+    if pca_dims:
+        from sklearn.decomposition import PCA
+        pca = PCA(n_components=int(pca_dims), random_state=cfg.seed).fit(Xtr_e)
+        Xtr_p, Xte_p = pca.transform(Xtr_e), pca.transform(Xte_e)
+        print(f"PCA: {Xtr_e.shape[1]} -> {pca_dims} dims "
+              f"({pca.explained_variance_ratio_.sum()*100:.0f}% variance kept)", flush=True)
+        emb_tag = f"FM embeddings (XGB, PCA-{pca_dims})"
+    else:
+        Xtr_p, Xte_p = Xtr_e, Xte_e
+    Xtr_c = np.hstack([Xtr_f.to_numpy(), Xtr_p])
+    Xte_c = np.hstack([Xte_f.to_numpy(), Xte_p])
     ytr, yte = tr.y.to_numpy(), te.y.to_numpy()
 
     results = []
     results.append(("features (XGB)", *_score(_xgb(cfg.xgb_device), Xtr_f, ytr, Xte_f, yte)))
-    results.append(("FM embeddings (XGB)", *_score(_xgb(cfg.xgb_device), Xtr_e, ytr, Xte_e, yte)))
+    results.append((emb_tag, *_score(_xgb(cfg.xgb_device), Xtr_p, ytr, Xte_p, yte)))
     results.append(("combined (XGB)", *_score(_xgb(cfg.xgb_device), Xtr_c, ytr, Xte_c, yte)))
     sc = StandardScaler().fit(Xtr_e)
     lr = LogisticRegression(max_iter=1000, class_weight="balanced")
     results.append(("FM embeddings (linear probe)",
                     *_score(lr, sc.transform(Xtr_e), ytr, sc.transform(Xte_e), yte)))
 
-    base_roc = results[0][1]
+    base_roc, base_pr = results[0][1], results[0][2]
     print("\n=== Downstream: default within "
           f"{horizon}mo of {cutoff} (held-out loans) ===")
-    print(f"  {'model':<30}{'ROC':>8}{'PR-AUC':>9}{'dROC vs feats':>15}")
+    print("  (AP/PR-AUC first — at ~0.1% base rate ROC saturates; AP is the operational metric)")
+    print(f"  {'model':<34}{'AP':>9}{'dAP':>9}{'ROC':>9}{'dROC':>9}")
     for name, roc, pr in results:
-        print(f"  {name:<30}{roc:>8.4f}{pr:>9.4f}{roc-base_roc:>+15.4f}")
+        print(f"  {name:<34}{pr:>9.4f}{pr-base_pr:>+9.4f}{roc:>9.4f}{roc-base_roc:>+9.4f}")
 
     if cfg.get_path("report"):
         rep = Path(cfg.report)
@@ -146,9 +161,13 @@ def main() -> None:
             f"after. {len(df):,} performing loans; loan-disjoint "
             f"{int(cfg.split.test_frac*100)}% held out. "
             "Features = tokenizer profile+event fields as-of cutoff (same info the FM saw).", "",
-            "| model | ROC-AUC | PR-AUC | dROC vs features |", "|---|--:|--:|--:|",
-            *[f"| {n} | {roc:.4f} | {pr:.4f} | {roc-base_roc:+.4f} |" for n, roc, pr in results],
+            "| model | AP (PR-AUC) | dAP | ROC-AUC | dROC |", "|---|--:|--:|--:|--:|",
+            *[f"| {n} | {pr:.4f} | {pr-base_pr:+.4f} | {roc:.4f} | {roc-base_roc:+.4f} |"
+              for n, roc, pr in results],
             "", "## Read",
+            "- **AP (PR-AUC) first**: at ~0.1% positives ROC-AUC saturates and hides the "
+            "differences that matter operationally (a fixed-capacity review team's catch rate). "
+            "This is the NVIDIA blueprint's own framing.",
             "- If **FM embeddings** or **combined** beats **features**, the FM adds signal beyond the "
             "raw as-of-cutoff features — the thesis, on real loans.",
             "- This is a loan-holdout probe on one window, not the calendar-OOT vs 0.757/0.784 "
