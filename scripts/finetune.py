@@ -228,13 +228,16 @@ def main() -> None:
         y_te = np.concatenate(yte_parts)
         tr_loans = np.concatenate(loan_parts)
         te_loans = np.concatenate(te_loan_parts)
-        # loan-disjoint guard: a loan observed in both eras goes wholly to one side (hash)
-        overlap = np.intersect1d(np.unique(tr_loans), np.unique(te_loans))
-        if len(overlap):
-            ov = pd.Series(overlap)
-            to_test = ov[pd.util.hash_pandas_object(ov, index=False).to_numpy() % 2 == 0].to_numpy()
-            keep_tr = ~np.isin(tr_loans, to_test)
-            keep_te = ~np.isin(te_loans, np.setdiff1d(overlap, to_test))
+        # loan-disjoint guard: a loan observed in both eras goes wholly to one side (hash).
+        # Use hashtable membership (set / pd.isin), NOT np.isin on string arrays — at OOT scale
+        # almost every loan spans both eras, so np.isin's O(n*m) string scan runs for hours.
+        overlap = set(pd.unique(tr_loans)) & set(pd.unique(te_loans))
+        if overlap:
+            ov = pd.Series(sorted(overlap))
+            to_test = set(ov[pd.util.hash_pandas_object(ov, index=False).to_numpy() % 2 == 0])
+            to_train = overlap - to_test
+            keep_tr = ~pd.Series(tr_loans).isin(to_test).to_numpy()      # hashtable lookup: O(n)
+            keep_te = ~pd.Series(te_loans).isin(to_train).to_numpy()
             pool = [pool[i] for i in np.flatnonzero(keep_tr)]
             y_pool = y_pool[keep_tr]
             te_samples = [te_samples[i] for i in np.flatnonzero(keep_te)]
