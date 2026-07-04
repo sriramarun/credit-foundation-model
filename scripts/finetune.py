@@ -189,8 +189,8 @@ def main() -> None:
         raise SystemExit(f"mode must be frozen|lora|full, got '{cfg.mode}'")
 
     set_seed(cfg.seed)
-    device = cfg.runtime.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    use_amp = cfg.runtime.bf16 and device.startswith("cuda")
+    device = cfg.get_path("runtime.device") or ("cuda" if torch.cuda.is_available() else "cpu")
+    use_amp = cfg.get_path("runtime.bf16", False) and device.startswith("cuda")
     epochs, bsz = cfg.train.epochs, cfg.train.batch_size
     lr = cfg.train.lr or {"frozen": 1e-3, "lora": 5e-4, "full": 2e-5}[cfg.mode]
     cutoff, horizon = cfg.get_path("task.cutoff"), cfg.task.horizon_months
