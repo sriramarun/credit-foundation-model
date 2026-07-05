@@ -2,3 +2,4 @@
 *.safetensors filter=lfs diff=lfs merge=lfs -text
 *.ckpt filter=lfs diff=lfs merge=lfs -text
 *.pt filter=lfs diff=lfs merge=lfs -text
+models/fannie_mae_credit_fm_m5/model.safetensors filter=lfs diff=lfs merge=lfs -text

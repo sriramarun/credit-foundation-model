@@ -35,3 +35,4 @@ venv/
 .vscode/
 logs/
 runs/
+!models/fannie_mae_credit_fm_m5/model.safetensors

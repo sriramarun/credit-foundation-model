@@ -1,0 +1,64 @@
+{
+  "vocab_size": 552,
+  "n_field_types": 45,
+  "dim": 384,
+  "n_heads": 8,
+  "profile_layers": 3,
+  "event_layers": 5,
+  "history_layers": 6,
+  "architecture": "CreditFoundationModel (encoder-MLM, three-branch KVT)",
+  "n_parameters": 25652906,
+  "framework": "credit_fm",
+  "license": "Apache-2.0",
+  "source_checkpoint": "gs://sriram-credit-fm-data/runs/m5_full.pt",
+  "run_config": {
+    "run_name": "run_2000_2022",
+    "gcs_root": "gs://sriram-credit-fm-data",
+    "key": "/workspace/.gcloud/credit-fm-sa.json",
+    "tokenizer": "configs/fannie_mae/tokenizer_v2.json",
+    "schema": "configs/fannie_mae/tokenizer.yaml",
+    "paths": {
+      "raw": "gs://sriram-credit-fm-data/output/raw/fannie_mae",
+      "processed": "gs://sriram-credit-fm-data/output/processed/fannie_mae/run_2000_2022",
+      "encoded": "gs://sriram-credit-fm-data/output/encoded/fannie_mae/run_2000_2022",
+      "embeddings": "gs://sriram-credit-fm-data/output/embeddings/fannie_mae/run_2000_2022",
+      "runs": "gs://sriram-credit-fm-data/runs"
+    },
+    "seed": 42,
+    "data": {
+      "train_dir": "gs://sriram-credit-fm-data/output/encoded/fannie_mae/run_2000_2022/train",
+      "val_dir": "gs://sriram-credit-fm-data/output/encoded/fannie_mae/run_2000_2022/val",
+      "batch_size": 32,
+      "num_workers": 4,
+      "limit": null
+    },
+    "model": {
+      "dim": 384,
+      "n_heads": 8,
+      "profile_layers": 3,
+      "event_layers": 5,
+      "history_layers": 6,
+      "dropout": 0.1
+    },
+    "optimizer": {
+      "lr": 0.0003,
+      "weight_decay": 0.01,
+      "warmup": 1000,
+      "grad_clip": 1.0
+    },
+    "schedule": {
+      "steps": 30000,
+      "log_every": 50,
+      "val_every": 500
+    },
+    "runtime": {
+      "device": null,
+      "bf16": true
+    },
+    "checkpoint": {
+      "out": "gs://sriram-credit-fm-data/runs/m5_full.pt"
+    },
+    "config_path": "configs/fannie_mae/pretrain.yaml"
+  },
+  "pretrain_steps": 30000
+}
