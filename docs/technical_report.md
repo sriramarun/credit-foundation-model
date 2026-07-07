@@ -122,6 +122,7 @@ blueprint's config-first workflow:
 | Extract | `extract_embeddings.py` | per-loan `[USR]` embeddings |
 | Evaluate | `evaluate_downstream.py` | features / embeddings / combined / probe |
 | Fine-tune | `finetune.py` | frozen / LoRA / full adaptation ladder |
+
 Design properties: reproducible (seeds, source checksums, resolved config stored in every artifact);
 leakage controls enforced in code; a parallel/vectorized tokenizer that encodes 1.75M loans in
 ~22 minutes; and a calendar-out-of-time evaluation protocol reusable for any train/test year split
@@ -159,6 +160,7 @@ industry-standard point-in-time model. For the OOT verdict we ran the baseline o
 | FM frozen | 0.8126 | 0.0073 |
 | FM LoRA | 0.8395 | 0.0127 |
 | FM full | 0.8417 | 0.0121 |
+
 On the benign, same-period window the fine-tuned FM comes within ~0.011 ROC of features but does not
 beat it. This is expected and consistent with the NVIDIA blueprint, where frozen embeddings alone
 also underperform features — a snapshot model is hard to beat when there is no regime shift to exploit.
@@ -171,6 +173,7 @@ Foundation model:
 | FM frozen | 0.7309 | −0.060 | 0.0052 | ≈0 |
 | FM LoRA | 0.8068 | **+0.016** | 0.0087 | **+53%** |
 | **FM full** | **0.8257** | **+0.034** | **0.0113** | **+98%** |
+
 **The foundation model beats the baseline on both metrics on genuinely unseen future loans.** The
 escalation frozen → LoRA → full is the textbook ordering: with ~8,500 positive fit examples, full
 fine-tuning has enough signal to help rather than overfit (unlike the benign run's ~745 positives,
@@ -180,17 +183,21 @@ held-out data (monitoring ROC ~0.836) than on the true future (frozen 0.731), qu
 out-of-time drop that all credit models suffer — the FM simply lands higher after it.
 ---
 ## 8. Discussion
+
 **ROC vs AP.** ROC measures ranking across the whole population; AP (average precision / PR-AUC)
 measures sharpness at the risky tail — the operational metric at 0.1% default rates ("of the loans
 you flag as riskiest, how many truly default?"). Following the NVIDIA blueprint, we judge AP first.
 On the OOT window the FM wins both, and the AP near-doubling is the operationally meaningful lift.
+
 **Where the FM earns its keep.** Benign window: features win narrowly. Out-of-time window: the FM
 wins clearly. This is exactly the thesis — the loan's behavioural *sequence* carries signal that
 generalises across a shift into new years, which a static snapshot cannot see.
+
 **Relation to prior work.** The pattern (embeddings-only < features; adaptation lifts above features)
 mirrors PRAGMA's published finding that LoRA fine-tuning matches or beats task-specific models. Our
 +53–98% AP lift is directly comparable to NVIDIA's +41.76% AP blueprint headline — achieved here on
 real credit data and a true future-prediction test rather than an in-period fraud split.
+
 ---
 ## 9. Limitations and honest caveats
 - **Benign years.** 2023–2024 were low-default years (0.13% base rate), so absolute AP is small for
