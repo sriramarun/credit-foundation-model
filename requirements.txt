@@ -11,9 +11,6 @@ pyyaml
 wandb
 matplotlib
 tqdm
-# app
-fastapi
-uvicorn
 # dev
 pytest
 pytest-cov

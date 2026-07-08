@@ -30,7 +30,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-app = ["fastapi", "uvicorn"]
 dev = ["pytest", "pytest-cov", "ruff"]
 nemo = ["nemo-toolkit"]
 

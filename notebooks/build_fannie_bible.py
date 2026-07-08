@@ -64,8 +64,10 @@ python scripts/profile_fannie_dataset.py \
     # ---------------------------------------------------------------- setup
     md("## 1. Setup &amp; overview"),
     code(r"""
-import importlib.util, json, re
+import importlib.util
+import json
 from pathlib import Path
+
 import pandas as pd
 
 pd.set_option("display.max_rows", 200)
@@ -80,7 +82,8 @@ assert (ROOT / "configs" / "fannie_mae").exists(), "run inside the credit-founda
 # import the glossary module directly (avoids importing credit_fm/__init__, which pulls in torch)
 _gspec = importlib.util.spec_from_file_location(
     "fannie_glossary", ROOT / "src" / "credit_fm" / "data" / "fannie_glossary.py")
-G = importlib.util.module_from_spec(_gspec); _gspec.loader.exec_module(G)
+G = importlib.util.module_from_spec(_gspec)
+_gspec.loader.exec_module(G)
 
 # load the pre-computed statistics profile (may be absent on a fresh checkout)
 PROFILE_PATH = ROOT / "reports" / "fannie_dataset_profile.json"
@@ -213,9 +216,13 @@ if dlq is not None:
     ax.plot(dlq.index, dlq["dpd30_plus_pct"], marker="o", label="30+ days past due")
     ax.plot(dlq.index, dlq["d180_plus_pct"], marker="s", label="180+ days (D180)")
     ax.plot(dlq.index, dlq["default_event_pct"], marker="^", label="default_event (D180 or credit ZBC)")
-    ax.set_xlabel("reporting year"); ax.set_ylabel("% of loan-months")
+    ax.set_xlabel("reporting year")
+    ax.set_ylabel("% of loan-months")
     ax.set_title("Delinquency & default rate by reporting year — whole loan book")
-    ax.grid(True, alpha=0.3); ax.legend(); plt.tight_layout(); plt.show()
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
 """),
     code(r"""
 if PROFILE and PROFILE["vintage_default_by_origination_year"]:
@@ -224,9 +231,12 @@ if PROFILE and PROFILE["vintage_default_by_origination_year"]:
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(11, 4))
     ax.bar(vint.index, vint["lifetime_default_pct"], color="#b3122f")
-    ax.set_xlabel("origination (vintage) year"); ax.set_ylabel("% of loans ever in default")
+    ax.set_xlabel("origination (vintage) year")
+    ax.set_ylabel("% of loans ever in default")
     ax.set_title("Lifetime default rate by vintage — whole loan book")
-    ax.grid(True, axis="y", alpha=0.3); plt.tight_layout(); plt.show()
+    ax.grid(True, axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.show()
 else:
     print("No vintage table (profile missing or built with --no-vintage).")
 """),
@@ -252,7 +262,8 @@ are just sampling noise.
 FULL_PATH = ROOT / "reports" / "fannie_dataset_profile_full.json"
 if PROFILE and FULL_PATH.exists():
     CMP = importlib.util.spec_from_file_location("cmp", ROOT / "scripts" / "compare_profiles.py")
-    cmp = importlib.util.module_from_spec(CMP); CMP.loader.exec_module(cmp)
+    cmp = importlib.util.module_from_spec(CMP)
+    CMP.loader.exec_module(cmp)
     full = json.loads(FULL_PATH.read_text())
     LA, LB = "4% sample", "100% book"
     yt = cmp._year_table(PROFILE, full, LA, LB)
@@ -274,13 +285,19 @@ if yt is not None:
     yr = yt.index
     ax1.plot(yr, yt["default_event_pct__4% sample"], marker="o", label="4% sample")
     ax1.plot(yr, yt["default_event_pct__100% book"], marker="s", label="100% book")
-    ax1.set_title("Default rate by year — sample vs book"); ax1.set_xlabel("reporting year")
-    ax1.set_ylabel("default_event %"); ax1.grid(True, alpha=0.3); ax1.legend()
+    ax1.set_title("Default rate by year — sample vs book")
+    ax1.set_xlabel("reporting year")
+    ax1.set_ylabel("default_event %")
+    ax1.grid(True, alpha=0.3)
+    ax1.legend()
     ax2.bar(yr, yt["default_event_pct__diff_pp"], color="#6a51a3")
     ax2.axhline(0, color="k", lw=0.8)
-    ax2.set_title("Gap: sample − book (percentage points)"); ax2.set_xlabel("reporting year")
-    ax2.set_ylabel("Δ pp"); ax2.grid(True, axis="y", alpha=0.3)
-    plt.tight_layout(); plt.show()
+    ax2.set_title("Gap: sample − book (percentage points)")
+    ax2.set_xlabel("reporting year")
+    ax2.set_ylabel("Δ pp")
+    ax2.grid(True, axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.show()
 """),
 
     # ---------------------------------------------------------------- per-column stats
@@ -329,8 +346,10 @@ if PROFILE and PROFILE["columns"]:
     if not top.empty:
         fig, ax = plt.subplots(figsize=(11, max(3, 0.32 * len(top))))
         ax.barh(top.index[::-1], top["null_%"][::-1], color="#4c72b0")
-        ax.set_xlabel("% null"); ax.set_title("Most-missing columns")
-        plt.tight_layout(); plt.show()
+        ax.set_xlabel("% null")
+        ax.set_title("Most-missing columns")
+        plt.tight_layout()
+        plt.show()
 """),
 
     # ---------------------------------------------------------------- caveats
