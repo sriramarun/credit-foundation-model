@@ -245,38 +245,51 @@ else:
 ### 4d. Is the 4% sample representative? — 4% panel vs 100% book
 
 The pretraining panel is a **deterministic 4% hash sample on `loan_id`** (whole loan histories kept
-or dropped together). This section proves that sampling doesn't distort the risk signal: it overlays
-the sample's delinquency curve on the whole book's. Provide a second profile of the **full** book to
-activate it:
+or dropped together). This section proves the sample reproduces the whole book's 26-year default
+curve — including the 2008–2012 crisis and the 2020–2021 COVID spike — not just its average.
+
+Generate the two delinquency profiles (each streams ~5 columns, so the full-book pass is cheap),
+then re-run this notebook:
 
 ```bash
+# 4% sample (your pretraining panel)
+python scripts/profile_fannie_dataset.py \
+    --panel gs://sriram-credit-fm-data/output/raw/fannie_mae/panel_2000_2024.parquet \
+    --out reports/delinquency_4pct.json --delinquency-only
+
+# 100% whole loan book, straight from the raw source
 python scripts/profile_fannie_dataset.py \
     --raw-root gs://sriram-credit-fm-data/fannie_by_reporting \
-    --out reports/fannie_dataset_profile_full.json --delinquency-only --no-vintage --no-loan-count
+    --out reports/delinquency_100pct.json --delinquency-only --no-vintage --no-loan-count
 ```
 
-The **pooled** (loan-month-weighted) default rate is the robust headline; per-year gaps in thin years
-are just sampling noise.
+The **pooled** (loan-month-weighted) default rate is the robust headline; per-year gaps in thin
+years (very low base rates) are just sampling noise. Note the panel stops at 2024 while the raw book
+includes partial-2025, so part of any pooled gap is that **window mismatch**, not sampling bias.
 """),
     code(r"""
-FULL_PATH = ROOT / "reports" / "fannie_dataset_profile_full.json"
-if PROFILE and FULL_PATH.exists():
+DLQ_4PCT = ROOT / "reports" / "delinquency_4pct.json"
+DLQ_100PCT = ROOT / "reports" / "delinquency_100pct.json"
+if DLQ_4PCT.exists() and DLQ_100PCT.exists():
     CMP = importlib.util.spec_from_file_location("cmp", ROOT / "scripts" / "compare_profiles.py")
     cmp = importlib.util.module_from_spec(CMP)
     CMP.loader.exec_module(cmp)
-    full = json.loads(FULL_PATH.read_text())
+    prof_4, prof_100 = json.loads(DLQ_4PCT.read_text()), json.loads(DLQ_100PCT.read_text())
     LA, LB = "4% sample", "100% book"
-    yt = cmp._year_table(PROFILE, full, LA, LB)
-    pa, pb = cmp._pooled(PROFILE), cmp._pooled(full)
-    print(f"pooled default rate — {LA}: {pa['default_event_pct']}%   "
-          f"{LB}: {pb['default_event_pct']}%   "
-          f"(Δ {round(pa['default_event_pct'] - pb['default_event_pct'], 4)} pp, "
-          f"{cmp._rel(pa['default_event_pct'], pb['default_event_pct'])}% rel)")
+    yt = cmp._year_table(prof_4, prof_100, LA, LB)
+    pa, pb = cmp._pooled(prof_4), cmp._pooled(prof_100)
+    rel = cmp._rel(pa["default_event_pct"], pb["default_event_pct"])
+    verdict = "REPRESENTATIVE" if (rel is not None and abs(rel) <= 5.0) else "REVIEW"
+    print(f"{LA}: {prof_4['n_rows']:,} rows   {LB}: {prof_100['n_rows']:,} rows")
+    print(f"pooled default rate — {LA}: {pa['default_event_pct']}%   {LB}: {pb['default_event_pct']}%"
+          f"   (Δ {round(pa['default_event_pct'] - pb['default_event_pct'], 4)} pp, {rel}% rel)")
+    print(f"VERDICT: {verdict}  (pooled |rel| <= 5%)")
     display(yt[[f"default_event_pct__{LA}", f"default_event_pct__{LB}",
                 "default_event_pct__diff_pp", "default_event_pct__diff_rel%"]])
 else:
     yt = None
-    print("Provide reports/fannie_dataset_profile_full.json (see the command above) to compare.")
+    print("Provide reports/delinquency_4pct.json and reports/delinquency_100pct.json "
+          "(see the commands above) to activate this comparison.")
 """),
     code(r"""
 if yt is not None:
