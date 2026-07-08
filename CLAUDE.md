@@ -33,15 +33,14 @@ foundation model beats point-in-time tabular baselines (XGBoost) on credit tasks
 src/credit_fm/ tokenizer/ (KVT) · models/ (3-branch) · data/ · training/ · inference/ · evaluation/ · utils/
 scripts/ prepare_data, classify_schema, train_baseline, train_tokenizer, pretrain,
 extract_embeddings, evaluate_downstream, score_portfolio, ingest_fannie_mae, setup_container.sh
-configs/ fannie_mae/ (PRIMARY) · dutch_mortgages/ (validation) · invoice_financing/ (planned)
+configs/ fannie_mae/ (PRIMARY) · dutch_mortgages/ (validation)
 notebooks/ 00_smoke_test_splits, 01–05 walkthroughs
-reference_implementations/ fannie_mae/ (primary) · dutch_mortgages/ · invoice_financing/
+reference_implementations/ fannie_mae/ (primary) · dutch_mortgages/
 models/ checkpoints (Git LFS) reports/ baseline_report.md, ...
 docs/ architecture, tokenization, training, evaluation, decision_log, model_cards/
-app/ FastAPI dashboard tests/ test_data.py (real), others stubs
+tests/ unit + artifact-validator tests
 
-Most of `src/credit_fm/` is still **scaffold** (`raise NotImplementedError`). What's real:
-`data/splits.py`, `data/schema.py` (`classify_fields`, `find_redundant`), `utils/`.
+All of `src/credit_fm/` is implemented (tokenizer, data, models, training, utils); dead plan-A scaffold subpackages were removed in the 2026-07 cleanup.
 ## Current status (Week 1 done)
 **Done & on `main`:** repo + scaffold + CI · H100 container setup · loan-stratified **temporal**
 split (`prepare_data.py`) · reproducible 71-field classification → `configs/dutch_mortgages/tokenizer.yaml`

@@ -8,6 +8,6 @@
 include: common.yaml
 
 checkpoint: ${paths.runs}/m5_full.pt
-tokenizer: configs/fannie_mae/tokenizer_v2.json
+tokenizer: configs/fannie_mae/tokenizer.json
 model_card: docs/model_cards/fannie_mae.md
 out: models/fannie_mae_credit_fm_m5
