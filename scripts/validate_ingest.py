@@ -70,9 +70,21 @@ def main() -> int:
 
     chk("panel is non-empty", meta.num_rows > 0, f"{meta.num_rows:,} rows, {meta.num_columns} cols")
 
+ 
     cols = _RAW + _DERIVED
-    df = (pd.read_parquet(args.panel, columns=cols) if args.full
-          else pf.read_row_group(0, columns=cols).to_pandas())
+
+    if args.full:
+        if args.panel.startswith("gs://"):
+            import gcsfs
+
+            fs = gcsfs.GCSFileSystem()
+
+            with fs.open(args.panel[len("gs://"):], "rb") as f:
+                df = pd.read_parquet(f, columns=cols)
+        else:
+            df = pd.read_parquet(args.panel, columns=cols)
+    else:
+        df = pf.read_row_group(0, columns=cols).to_pandas()
     scope = "FULL panel" if args.full else "first row group"
     print(f"validating {len(df):,} rows ({scope})\n", flush=True)
 
