@@ -69,6 +69,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import yaml
 
 pd.set_option("display.max_rows", 200)
 pd.set_option("display.max_colwidth", 100)
@@ -85,23 +86,45 @@ _gspec = importlib.util.spec_from_file_location(
 G = importlib.util.module_from_spec(_gspec)
 _gspec.loader.exec_module(G)
 
-# load the pre-computed statistics profile (may be absent on a fresh checkout)
-PROFILE_PATH = ROOT / "reports" / "fannie_dataset_profile.json"
-PROFILE = json.loads(PROFILE_PATH.read_text()) if PROFILE_PATH.exists() else None
+# resolve the ingested-panel output path from the recipe that produced it (config is the truth)
+_common = yaml.safe_load((ROOT / "configs" / "fannie_mae" / "common.yaml").read_text())
+_ingest = yaml.safe_load((ROOT / "configs" / "fannie_mae" / "ingest_2000_2024.yaml").read_text())
+_raw_dir = _common["paths"]["raw"].replace("${gcs_root}", _common["gcs_root"])
+PANEL_PATH = f"{_raw_dir}/{_ingest['combined_name']}"
+
+# Load the pre-computed statistics profile. The full profile (`fannie_dataset_profile.json`, with
+# per-column stats) drives every section; if it is absent we fall back to the lightweight
+# `delinquency_4pct.json` so the overview + delinquency sections still render (only the per-column
+# stats in section 5 need the full profile).
+FULL_PROFILE = ROOT / "reports" / "fannie_dataset_profile.json"
+DLQ_PROFILE = ROOT / "reports" / "delinquency_4pct.json"
+if FULL_PROFILE.exists():
+    PROFILE = json.loads(FULL_PROFILE.read_text())
+    PROFILE_SRC = FULL_PROFILE.name
+elif DLQ_PROFILE.exists():
+    PROFILE = json.loads(DLQ_PROFILE.read_text())
+    PROFILE_SRC = DLQ_PROFILE.name + " (delinquency-only — section 5 needs the full profile)"
+else:
+    PROFILE = None
+    PROFILE_SRC = None
+HAS_COLUMN_STATS = bool(PROFILE and PROFILE.get("columns"))
 print("glossary fields:", len(G.ALL_FIELDS), "| profile:",
-      "loaded" if PROFILE else f"MISSING -> {PROFILE_PATH} (run profile_fannie_dataset.py)")
+      PROFILE_SRC or "MISSING (run scripts/profile_fannie_dataset.py — see section 4d for commands)")
 """),
     code(r"""
+print(f"panel path : {PANEL_PATH}")
 if PROFILE:
     print(f"source     : {PROFILE['source']}  ({PROFILE['source_kind']})")
     print(f"generated  : {PROFILE['generated_utc']}")
     print(f"rows       : {PROFILE['n_rows']:,}  (loan-months)")
     print(f"loans      : {PROFILE['n_loans']}")
-    print(f"columns    : {PROFILE['n_columns']}")
+    print(f"columns    : {PROFILE['n_columns']}  (0 = delinquency-only profile; run a full profile "
+          f"for per-column stats)")
     print(f"reporting  : {PROFILE['reporting_range'][0]} .. {PROFILE['reporting_range'][1]}")
     print(f"origination: {PROFILE['origination_range'][0]} .. {PROFILE['origination_range'][1]}")
 else:
-    print("No profile artifact yet — sections 4 and 5 will be empty until you generate it.")
+    print("No profile artifact yet — generate one to populate the overview, delinquency, and "
+          "per-column sections (see the commands in section 4d).")
 """),
 
     # ---------------------------------------------------------------- glossary
@@ -142,12 +165,40 @@ The included/excluded split is **derived live** from `configs/fannie_mae/raw_sch
 source fields) and `configs/fannie_mae/baseline.yaml` (the `exclude` / `leakage` lists + the
 id/time/label/gate roles), so this table can never drift from the config the model actually uses.
 
+### The golden rule
+
+We predict: **"Will this loan — healthy today — go bad in the next 12 months?"** So the model may
+use only what you'd genuinely know **today, about a healthy loan**. One test sorts almost every
+column:
+
+> **Imagine a loan that is perfectly healthy right now. Would this column already have a meaningful
+> value?**
+> - **No** — it only fills in *after* trouble starts → **leakage** (using it = peeking at the answer).
+> - **Yes, but it's a name / ID / duplicate / too-fine geography** → not cheating, just useless or
+>   risky → **excluded**.
+
 * **Model features** — everything not excluded and not leakage.
 * **Excluded (non-features)** — ids, raw dates (superseded by derived ISO dates), high-cardinality
   geo, and non-tabular strings.
-* **Leakage** — outcome / contemporaneous-state / post-default servicing columns. Using any of
-  these would let the model peek at the answer, so they are dropped and the task is gated to
-  loans *performing at the observation date* (predict **new** defaults).
+* **Leakage** — outcome / contemporaneous-state / post-default servicing columns.
+
+### "If the delinquency columns are removed, how does training know a loan failed?"
+
+The leakage rules apply to the model's **inputs**, not to the **answer key**. Two separate tracks:
+
+* **Features (the question)** — what the model reads at the observation date; every delinquency /
+  outcome column is stripped from this.
+* **Label (the answer)** — `default_event`, which is *computed from* those same delinquency markers
+  (`dlq_num >= 6`, or a credit-event zero-balance code) but kept on a separate track and pointed at
+  the **future**: at observation date T we look forward `horizon_months` and ask "did this loan
+  default by T+12?". That forward-looking yes/no is the label.
+
+So the delinquency data **defines the answer key — it is just banned from the question paper.** It's
+like a medical study: you record today's blood pressure and cholesterol (features), wait a year and
+note who had a heart attack (label, which of course needs the outcome), then train the model to
+predict the heart attack from *today's* vitals. Feeding the heart-attack record back in as an input
+would be the leak — the model would score ~perfectly in testing and be useless on a living patient.
+(This is exactly why the leaky config scores ROC 0.93 and the honest, gated one scores 0.73.)
 """),
     code(r"""
 def load_yaml(path):
@@ -162,8 +213,11 @@ exclude = set(base.get("exclude", []))
 leakage = set(base.get("leakage", []))
 roles = {base.get("id_col"), base.get("time_col"), base.get("label_col"), base.get("gate_col")}
 roles.discard(None)
+# the id is published as `loan_identifier` and renamed to `loan_id` (the configured id_col) at ingest
+ID_RAW = "loan_identifier"
 
-features = [c for c in all_cols if c not in exclude and c not in leakage and c not in roles]
+features = [c for c in all_cols
+            if c not in exclude and c not in leakage and c not in roles and c != ID_RAW]
 excluded = [c for c in all_cols if c in exclude]
 leak_raw = [c for c in all_cols if c in leakage]
 
@@ -178,15 +232,113 @@ print(f"  role cols (id/time/label/gate): {sorted(roles)}")
 pd.DataFrame([{"column": c, "name": G.ALL_FIELDS[c][1], "type": G.ALL_FIELDS[c][2],
                "description": G.ALL_FIELDS[c][3]} for c in features]).reset_index(drop=True)
 """),
-    md("### 3b. Excluded non-feature columns (ids, raw dates, geo, non-tabular)"),
+    md(r"""
+### 3b. Excluded non-feature columns — "not cheating, just not good features"
+
+These wouldn't leak the answer, but they'd add noise, duplicate something we already keep, or create
+fairness risk. Four groups:
+
+1. **Names & IDs** (`reference_pool_id`, `seller_name`, `servicer_name`, `master_servicer`,
+   `deal_name`) — random labels; which pool or bank serviced the loan says nothing about the
+   borrower's risk, and "which lender" can proxy for neighborhood/race (**fair-lending risk**).
+2. **Raw dates we already use elsewhere** (`monthly_reporting_period` → derived `reporting_date`;
+   `origination_date` → the temporal **split key**, not a feature; `first_payment_date`,
+   `maturity_date`, and the IO/ARM schedule dates) — redundant with loan age / term / rate, and
+   feeding the calendar date would let the model memorize "2007 loans defaulted" instead of learning
+   credit risk.
+3. **Too-fine geography** (`metropolitan_statistical_area`, `zip_code_short`) — thousands of codes →
+   overfitting, and a classic redlining proxy. We keep `property_state` (coarse, safe granularity).
+4. **A non-tabular string** (`loan_payment_history`) — a 24-character coded string of past-due
+   status: not a clean number *and* basically a compressed delinquency history.
+"""),
     code(r"""
 pd.DataFrame([{"column": c, "name": G.ALL_FIELDS[c][1], "why": G.ALL_FIELDS[c][3]}
               for c in excluded]).reset_index(drop=True)
 """),
-    md("### 3c. Leakage columns (outcome / contemporaneous / post-default — held out)"),
+    md(r"""
+### 3c. Leakage columns — "these secretly contain the answer"
+
+Every one is **blank or zero for a healthy loan** and only gets a value once the loan is already in
+trouble or already ended. If the model sees a value here, it's reading the outcome, not predicting
+it. Six groups:
+
+1. **The outcome itself** — `current_loan_delinquency_status`, `dlq_num` ("how many months behind"),
+   plus our derived labels `default_event` / `prepay_event` / `is_performing`.
+2. **Loan termination / zero-balance** (only filled when the loan *ends*) — `zero_balance_code` (+
+   dates), `upb_at_the_time_of_removal`, `repurchase_date`.
+3. **Foreclosure & loss dollars** (only exist *after* default) — `foreclosure_date`,
+   `disposition_date`, `last_paid_installment_date`, and every cost/proceeds/write-off/accrued-
+   interest amount booked while repossessing and selling a defaulted home.
+4. **Modifications & workouts** ("the treatment reveals the disease") — `modification_flag`,
+   principal forgiveness, modification/credit-event losses, `borrower_assistance_plan`, deferrals,
+   and alternative delinquency resolutions: you only get these once you're *already* missing payments.
+5. **REO listing** (`original_list_*`, `current_list_*`) — the property is being sold post-foreclosure.
+6. **Loan holdback** (`loan_holdback_indicator` + date) — a distress hold Fannie places on loans
+   about to hit a credit event.
+
+**The subtle bit:** `current_loan_delinquency_status` is banned but `current_actual_upb` and
+`current_interest_rate` are **kept** — same word "current," opposite verdict. Every healthy loan has
+a current balance and rate (safe); only a *sick* loan has a non-zero delinquency status (leak).
+Contemporaneous is fine; contemporaneous-*and-only-exists-when-things-go-wrong* is not.
+"""),
     code(r"""
 pd.DataFrame([{"column": c, "name": G.ALL_FIELDS[c][1], "why": G.ALL_FIELDS[c][3]}
               for c in leak_raw]).reset_index(drop=True)
+"""),
+    md(r"""
+### 3d. Complete panel schema — every column in the ingested output
+
+The final ingest artifact and its full column list. Ingest keeps **all** source fields (renaming
+`loan_identifier` → `loan_id`, rewriting `origination_date` to an ISO string) and appends the six
+derived columns, so the panel has all 113 source fields + 5 new derived = **118 columns**. Each row
+below is annotated with the role the pipeline assigns it (`feature` / `excluded` / `leakage` /
+`id` / `time` / `label` / `gate`).
+"""),
+    code(r"""
+print("final ingest output:", PANEL_PATH)
+
+DERIVED_APPENDED = ["reporting_date", "dlq_num", "default_event", "prepay_event", "is_performing"]
+# panel columns in file order: raw fields (loan_identifier shown as its renamed loan_id) + derived
+raw_in_order = [("loan_id" if c["name"] == "loan_identifier" else c["name"], c["index"])
+                for c in schema["columns"]]
+panel = [(name, f"raw#{idx}") for name, idx in raw_in_order] + [(c, "derived") for c in DERIVED_APPENDED]
+
+def role_of(col):
+    roles_map = {base.get("id_col"): "id", base.get("time_col"): "time",
+                 base.get("label_col"): "label", base.get("gate_col"): "gate"}
+    if col in roles_map:
+        return roles_map[col]
+    if col in leakage:
+        return "leakage"
+    if col in exclude:
+        return "excluded"
+    return "feature"
+
+SCHEMA = pd.DataFrame([{
+    "column": col, "source": src, "role": role_of(col),
+    "type": G.ALL_FIELDS.get(col, (None, None, "?"))[2],
+    "name": G.ALL_FIELDS.get(col, (None, col))[1],
+} for col, src in panel])
+print(f"{len(SCHEMA)} columns  |  " + "  ".join(f"{r}={n}" for r, n in SCHEMA.role.value_counts().items()))
+SCHEMA
+"""),
+    md("**Optional — verify this contract against the live panel** (reads only the parquet footer; "
+       "needs GCS access, so it works on the container and is skipped elsewhere):"),
+    code(r"""
+try:
+    import pyarrow.parquet as pq
+    if PANEL_PATH.startswith("gs://"):
+        import gcsfs
+        fs = gcsfs.GCSFileSystem()
+        actual = list(pq.ParquetFile(fs.open(PANEL_PATH[len("gs://"):])).schema.names)
+    else:
+        actual = list(pq.ParquetFile(PANEL_PATH).schema.names)
+    expected = set(SCHEMA["column"])
+    missing, extra = expected - set(actual), set(actual) - expected
+    print(f"live panel columns: {len(actual)}  |  expected: {len(expected)}")
+    print("MATCH ✓" if not missing and not extra else f"missing {missing}  extra {extra}")
+except Exception as e:
+    print(f"skipped live verification ({type(e).__name__}: {e}). Run on the container with GCS access.")
 """),
 
     # ---------------------------------------------------------------- delinquency by year
@@ -320,6 +472,15 @@ if yt is not None:
 Computed by `scripts/profile_fannie_dataset.py` in a single memory-bounded streaming pass over the
 dataset. Numeric columns report min/mean/std and quantiles (quantiles from a 200k reservoir sample);
 categorical columns report their top values; distinct counts are exact up to a 200k cap.
+
+**These tables need the *full* profile** (with per-column stats), not a delinquency-only one. If the
+cells below are empty, generate it once (a few minutes on the 4% panel) and re-run this notebook:
+
+```bash
+python scripts/profile_fannie_dataset.py \
+    --panel gs://sriram-credit-fm-data/output/raw/fannie_mae/panel_2000_2024.parquet \
+    --out reports/fannie_dataset_profile.json
+```
 """),
     code(r"""
 def stats_frames(profile):
@@ -337,16 +498,18 @@ def stats_frames(profile):
     return (pd.DataFrame(numeric).set_index("column") if numeric else pd.DataFrame(),
             pd.DataFrame(categ).set_index("column") if categ else pd.DataFrame())
 
-if PROFILE:
+if HAS_COLUMN_STATS:
     NUM, CAT = stats_frames(PROFILE)
+    print(f"{len(NUM)} numeric + {len(CAT)} categorical/date columns profiled")
 else:
     NUM = CAT = pd.DataFrame()
-    print("No profile — nothing to show.")
+    print("Loaded profile has no per-column stats (delinquency-only). "
+          "Generate the full profile above, then re-run — sections 5a-5c will populate.")
 """),
     md("### 5a. Numeric columns"),
-    code("NUM if not NUM.empty else 'no numeric columns / no profile'"),
+    code("NUM if not NUM.empty else 'no per-column stats — generate the full profile (see above)'"),
     md("### 5b. Categorical &amp; date columns (top values)"),
-    code("CAT if not CAT.empty else 'no categorical columns / no profile'"),
+    code("CAT if not CAT.empty else 'no per-column stats — generate the full profile (see above)'"),
     md("### 5c. Missingness — most-null columns"),
     code(r"""
 if PROFILE and PROFILE["columns"]:
