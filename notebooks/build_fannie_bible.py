@@ -322,23 +322,23 @@ SCHEMA = pd.DataFrame([{
 print(f"{len(SCHEMA)} columns  |  " + "  ".join(f"{r}={n}" for r, n in SCHEMA.role.value_counts().items()))
 SCHEMA
 """),
-    md("**Optional — verify this contract against the live panel** (reads only the parquet footer; "
-       "needs GCS access, so it works on the container and is skipped elsewhere):"),
+    md("**Verify this contract against the actual file.** The profiler already read the real panel "
+       "and recorded every column it saw, so we cross-check the config-derived schema above against "
+       "the profiler's columns — no GCS access needed here (it's in the profile artifact). This only "
+       "works with the *full* profile; a delinquency-only profile doesn't carry column names."),
     code(r"""
-try:
-    import pyarrow.parquet as pq
-    if PANEL_PATH.startswith("gs://"):
-        import gcsfs
-        fs = gcsfs.GCSFileSystem()
-        actual = list(pq.ParquetFile(fs.open(PANEL_PATH[len("gs://"):])).schema.names)
-    else:
-        actual = list(pq.ParquetFile(PANEL_PATH).schema.names)
+if HAS_COLUMN_STATS:
+    actual = set(PROFILE["columns"])
     expected = set(SCHEMA["column"])
-    missing, extra = expected - set(actual), set(actual) - expected
-    print(f"live panel columns: {len(actual)}  |  expected: {len(expected)}")
-    print("MATCH ✓" if not missing and not extra else f"missing {missing}  extra {extra}")
-except Exception as e:
-    print(f"skipped live verification ({type(e).__name__}: {e}). Run on the container with GCS access.")
+    missing, extra = expected - actual, actual - expected
+    print(f"profiled panel columns: {len(actual)}  |  expected from config: {len(expected)}")
+    print("MATCH ✓ — the real panel schema matches this contract" if not missing and not extra
+          else f"MISMATCH — missing from file: {missing or '{}'}  |  extra in file: {extra or '{}'}")
+else:
+    print("Load the FULL profile (reports/fannie_dataset_profile.json) to verify these columns "
+          "against the real file — the profiler records the actual panel schema when it runs.\\n"
+          "Generate it with:  python scripts/profile_fannie_dataset.py "
+          "--panel " + PANEL_PATH + " --out reports/fannie_dataset_profile.json")
 """),
 
     # ---------------------------------------------------------------- delinquency by year
