@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 finevals.ai and contributors.
-"""Generate ``notebooks/06_fannie_data_bible.ipynb`` — the Fannie Mae dataset 'bible'.
+"""Generate ``notebooks/00_data_bible.ipynb`` — the Fannie Mae dataset 'bible'.
 
 Kept as a builder (not a hand-written .ipynb) so the notebook is regenerated deterministically and
 reviewed as plain Python. Run from anywhere::
 
-    python notebooks/build_fannie_bible.py
+    python notebooks/build_data_bible.py
 
 The notebook itself reads ``reports/fannie_dataset_profile.json`` (produced by
 ``scripts/profile_fannie_dataset.py``); glossary + include/exclude lists are derived live from
@@ -19,7 +19,7 @@ from pathlib import Path
 import nbformat as nbf
 
 REPO = Path(__file__).resolve().parent.parent
-OUT = REPO / "notebooks" / "06_fannie_data_bible.ipynb"
+OUT = REPO / "notebooks" / "00_data_bible.ipynb"
 
 
 def md(text: str) -> nbf.NotebookNode:
