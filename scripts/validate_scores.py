@@ -2,17 +2,26 @@
 # Copyright (c) 2026 finevals.ai and contributors.
 """Validate a scored-portfolio artifact against the scoring contract — read-only audit.
 
-Proves the *produced scores* file (from ``scripts/score_portfolio.py``) is well-formed:
+Two layers, mirroring the pipeline convention:
 
-  A) schema — has the id / score / n_events / cutoff columns;
-  B) score range — every score in [0, 1], no NaN;
-  C) one row per loan — no duplicate ids;
-  D) each scored loan has history — n_events >= 1;
-  E) single cutoff — one cutoff value, matching the manifest;
-  F) manifest agreement — row count and score summary match ``<scores>_manifest.json``.
+* **Structural** (always) — the *produced scores* file (from ``scripts/score_portfolio.py``) is
+  well-formed:
+    A) schema — has the id / score / n_events / cutoff columns;
+    B) score range — every score in [0, 1], no NaN;
+    C) one row per loan — no duplicate ids;
+    D) each scored loan has history — n_events >= 1;
+    E) single cutoff — one cutoff value, matching the manifest;
+    F) manifest agreement — row count and score summary match ``<scores>_manifest.json``.
+* **Quality** (``--labeled-panel``) — first *reconcile the population* (scored loans exist in the
+  panel, dup/coverage counts — a plausible ROC on the wrong snapshot is a trap), then score against
+  ground truth: join the forward ``default_event`` label (default within ``--horizon`` months of the
+  cutoff) and report ROC-AUC / PR-AUC. Check G = scored ⊆ panel; H (with ``--min-roc``) gates the
+  ROC. Only meaningful for a **past** cutoff whose outcomes are already in the panel.
 
     python scripts/validate_scores.py --scores gs://.../portfolio_scores.parquet
-    python scripts/validate_scores.py --scores runs/portfolio_scores.parquet
+    # + quality: reproduce the model's ~0.82 on a labeled past cutoff
+    python scripts/validate_scores.py --scores gs://.../scores_2022.parquet \
+        --labeled-panel gs://.../panel_2000_2024.parquet --horizon 12 --min-roc 0.7
 """
 
 from __future__ import annotations
@@ -26,12 +35,12 @@ from pathlib import Path
 import pandas as pd
 
 
-def _read_parquet(path: str) -> pd.DataFrame:
+def _read_parquet(path: str, columns=None) -> pd.DataFrame:
     if path.startswith("gs://"):
         import gcsfs
         with gcsfs.GCSFileSystem().open(path[len("gs://"):]) as f:
-            return pd.read_parquet(f)
-    return pd.read_parquet(path)
+            return pd.read_parquet(f, columns=columns)
+    return pd.read_parquet(path, columns=columns)
 
 
 def _read_text(path: str) -> str:
@@ -48,6 +57,12 @@ def main() -> int:
     ap.add_argument("--scores", required=True, help="scored parquet (local or gs://)")
     ap.add_argument("--id-col", default="loan_id")
     ap.add_argument("--key", default="/workspace/.gcloud/credit-fm-sa.json")
+    ap.add_argument("--labeled-panel", help="panel with the forward label — enables quality eval "
+                    "(ROC/AP vs ground truth). Use only for a PAST cutoff whose outcomes exist.")
+    ap.add_argument("--horizon", type=int, default=12, help="forward-label window (months)")
+    ap.add_argument("--label-col", default="default_event")
+    ap.add_argument("--time-col", default="reporting_date")
+    ap.add_argument("--min-roc", type=float, help="if set, PASS/FAIL on ROC-AUC >= this")
     args = ap.parse_args()
     if args.scores.startswith("gs://") and Path(args.key).exists():
         os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", args.key)
@@ -97,6 +112,47 @@ def main() -> int:
             f"manifest n_scored={manifest.get('n_scored')} vs {len(df)}")
     else:
         chk("F: manifest present", False, f"no manifest at {manifest_path}")
+
+    # Quality (optional) — reconcile the scored population against the labeled panel, then score the
+    # scores against the forward default label. (A plausible ROC on the WRONG population is a trap:
+    # if the scored file is a different snapshot, or dropped/duplicated loans, the metric can still
+    # look fine — so verify the population first, then the metric.)
+    if args.labeled_panel and need <= have and len(df) and len(df["cutoff"].astype(str).unique()) == 1:
+        from sklearn.metrics import average_precision_score, roc_auc_score
+        cutoff = pd.to_datetime(df["cutoff"].astype(str).iloc[0])
+        hi = cutoff + pd.DateOffset(months=args.horizon)
+        panel = _read_parquet(args.labeled_panel, columns=[idc, args.time_col, args.label_col])
+        dt = pd.to_datetime(panel[args.time_col], errors="coerce")
+
+        scored_ids = set(df[idc].astype(str))
+        panel_ids = set(panel[idc].astype(str))
+        window = panel[(dt > cutoff) & (dt <= hi) & panel[args.label_col].fillna(False).astype(bool)]
+        defaulted = set(window[idc].astype(str))               # loans that default in the window
+        matched = defaulted & scored_ids                       # ...that are actually in the scored set
+        y = df[idc].astype(str).isin(defaulted).astype(int).to_numpy()
+
+        # population reconciliation — the reviewer's point
+        print(f"\n  population : scored={len(df):,}  unique={df[idc].nunique():,}  "
+              f"dup={int(df[idc].duplicated().sum())}  in-panel={len(scored_ids & panel_ids):,}/"
+              f"{len(scored_ids):,}")
+        print(f"  labels     : window_defaults={len(defaulted):,}  matched_in_scored={len(matched):,} "
+              f"({len(matched)/max(len(defaulted),1)*100:.1f}% — rest were gated out as non-performing "
+              f"at the cutoff, expected)  positive_rate={y.mean()*100:.3f}%")
+        # G) every scored loan must exist in the labeled panel (else it's the wrong snapshot/panel)
+        chk("G: scored loans all exist in the labeled panel", scored_ids <= panel_ids,
+            f"{len(scored_ids - panel_ids):,} scored ids absent from the panel")
+
+        both = 0 < y.sum() < len(y)
+        if both:
+            roc = roc_auc_score(y, df["score"].to_numpy())
+            ap = average_precision_score(y, df["score"].to_numpy())
+            print(f"  forward-label eval (default within {args.horizon}mo of {cutoff.date()}): "
+                  f"n={len(y):,}  ROC={roc:.4f}  AP={ap:.4f}")
+            if args.min_roc is not None:
+                chk(f"H: ROC-AUC >= {args.min_roc}", roc >= args.min_roc, f"ROC={roc:.4f}")
+        else:
+            chk("H: forward-label eval has both classes", both,
+                f"{int(y.sum())} defaults in {len(y):,} — need a labeled PAST cutoff")
 
     ok = all(r[0] for r in results)
     for passed, name, detail in results:
