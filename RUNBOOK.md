@@ -1,106 +1,95 @@
 # Runbook — Running the Pipeline
 
-End-to-end steps for what's built today. Stages not yet implemented are marked **TODO**. The
-**primary corpus is Fannie Mae**; the Dutch synthetic panel is the validation set. See
-`docs/architecture.md` for how the pieces fit and `CLAUDE.md` for project context.
+End-to-end steps for the full pipeline as built today. Every script follows one grammar:
+`-c <recipe.yaml>` plus dotted overrides (`--key.path value`); every path may be local,
+`gs://`, or `s3://` (`credit_fm.utils.storage`). The reference corpus recipes live in
+`configs/fannie_mae/`; the Dutch synthetic panel is the validation set. See
+`docs/architecture.md` for how the pieces fit.
 
-## 0. Environment (H100 container)
+## 0. Environment (GPU container)
 ```bash
 bash scripts/setup_container.sh     # restart-proof venv + install + git (docs/container_setup.md)
 ```
-Secrets (`WANDB_API_KEY`, `HF_TOKEN`) and the GCS key live in `/workspace/secrets.env` and
-`/workspace/.gcloud/credit-fm-sa.json` — never committed. Storage is pluggable: every path may be
-a local path or a `gs://` / `s3://` URL.
+Secrets and the GCS key live in `/workspace/secrets.env` and
+`/workspace/.gcloud/credit-fm-sa.json` — never committed.
 
-## 1. Data
-- **Fannie Mae (primary):** ingested to GCS via the `fannie-mae-etl` repo →
-  `scripts/ingest_fannie_mae.py` writes a per-loan monthly panel with derived `origination_date`,
-  `reporting_date`, `default_event`, `is_performing`. See `docs/data/fannie_mae.md`.
-- **Dutch (validation):** `data/raw/all_cutoffs.parquet` (ESMA Annex 2). `loan_book.parquet`
-  carries eval-only latents (`_segment`) — **never a feature**.
+## 1. Ingest → per-loan monthly panel
+```bash
+python scripts/ingest_fannie_mae.py -c configs/fannie_mae/ingest.yaml
+# full 25-year corpus at the 4% loan-hash sample:
+python scripts/ingest_fannie_mae.py -c configs/fannie_mae/ingest_2000_2024.yaml
+# audit the produced panel (re-derives labels from retained raw columns):
+python scripts/validate_ingest.py --panel <out>/panel_2000_2024.parquet
+```
+Derives `reporting_date` (ISO), `dlq_num`, `default_event` (D180 / credit-event zero-balance),
+`prepay_event`, `is_performing`. See `notebooks/00_data_bible.ipynb` for the full schema.
 
 ## 2. Split (loan-stratified, temporal — DL-007)
 ```bash
-python scripts/prepare_data.py --input <panel.parquet> --origination-col origination_date
-# → processed/{train,val,test}.parquet + splits.csv + splits.meta.json
+python scripts/prepare_data.py -c configs/fannie_mae/prepare.yaml \
+    --run_name run_2000_2024 --reporting_max 2022-12-31   # cap = pretrain stays blind to the OOT era
+# → {train,val,test}.parquet + splits.csv + splits.meta.json
+python scripts/validate_splits.py --dir <out_dir>          # disjoint/temporal/manifest audit
 ```
-Schema-agnostic via `--id-col` / `--origination-col` (or derive with `--reporting-col`/`--seasoning-col`).
+See `notebooks/01_data_splits.ipynb` for what the split guarantees (and what it's *not* — the
+credit test is the OOT harness in step 7, not `test.parquet`).
 
-## 3. Tokenizer config (generated, not hand-edited)
+## 3. Field schema (classify)
 ```bash
-python scripts/classify_schema.py --input processed/train.parquet \
-  --out configs/<asset>/tokenizer.yaml
-# → profile/event field roles; drops constant + redundant columns
+python scripts/classify_schema.py -c configs/fannie_mae/classify.yaml    # report + suggestions
 ```
+For the mortgage reference the shipped `configs/fannie_mae/tokenizer.yaml` is curated on top of
+the classifier's output (leakage exclusion, ARM/IO drops, regulatory anchors) — see
+`notebooks/02_schema_classification.ipynb`.
 
-## 4. Fit the tokenizer  ✅ M1
+## 4. Fit the tokenizer (train split only — DL-008)
 ```bash
-python scripts/train_tokenizer.py \
-  --config configs/fannie_mae/tokenizer.yaml \
-  --train  gs://sriram-credit-fm-data/output/processed/fannie_mae/run_2016_2017/train.parquet \
-  --out    configs/fannie_mae/tokenizer.json \
-  --report reports/fannie_tokenizer_report.md
-# → frozen vocab (Fannie: 440 tokens) + QA report (roundtrip, OOV, length). Fit on TRAIN only.
+python scripts/train_tokenizer.py -c configs/fannie_mae/tokenizer_fit.yaml
+# → configs/fannie_mae/tokenizer.json (frozen vocab; 552 tokens on the full corpus) + QA report
 ```
 
-## 5. Encode shards (encode-once)  ✅ M2
+## 5. Encode shards (encode-once — DL-014)
 ```bash
-python scripts/encode_dataset.py \
-  --tokenizer configs/fannie_mae/tokenizer.json \
-  --in   gs://.../output/processed/fannie_mae/run_2016_2017/train.parquet \
-  --out  gs://.../output/encoded/fannie_mae/run_2016_2017/train --shard-size 50000
-# repeat for val/test → shard-*.parquet + manifest.json (token-id contract for the model)
-```
-In code, the data layer is then:
-```python
-from credit_fm.data import CreditDataModule
-dm = CreditDataModule(train_dir, val_dir=val_dir, batch_size=64, limit=1000)  # limit = toy run
-batch = next(iter(dm.train_dataloader()))   # {input_ids, attention_mask, labels, event_index, ...}
+python scripts/encode_dataset.py -c configs/fannie_mae/encode.yaml --workers 32
+# → shard-*.parquet + manifest.json per split (the token-id contract the model reads)
 ```
 
-## 6. Pretrain the model (MLM)  ✅ M2
+## 6. Pretrain (MLM)
 ```bash
-# single-GPU run (encode shards first, step 5). Watch TRAIN vs VAL loss.
-python scripts/pretrain.py \
-  --tokenizer configs/fannie_mae/tokenizer.json \
-  --train-dir gs://.../output/encoded/fannie_mae/run_2016_2017/train \
-  --val-dir   gs://.../output/encoded/fannie_mae/run_2016_2017/val \
-  --limit 100000 --steps 1500 --batch-size 128 --dim 384 --bf16 --dropout 0.1 \
-  --val-every 150 --log-every 50 --out gs://.../runs/toy.pt
+python scripts/pretrain.py -c configs/fannie_mae/pretrain.yaml
 ```
-**Read the loss:** train and val falling *together* = generalising; a wide gap = overfitting.
-`train_mlm` early-stops on best val and saves those weights. At small data (≤100k loans) the model
-overfits by design — see **DL-015**: the 25.5M model needs ~2M loans (~500M tokens). MLM loss is a
-proxy; the real gate is the downstream OOT eval (§8). Scale `--dim`/`--steps`/`--limit` for M3.
+Train and val loss falling *together* = generalising; a widening gap = memorising (DL-015 — the
+~26M model needs the full corpus, not a 100k-loan slice). MLM loss is a proxy; the verdict is
+step 7.
 
-## 7. Baselines — the honest bar for the FM
+## 7. The out-of-time verdict
 ```bash
-# Fannie out-of-time (OOT) — the real bar
-python scripts/build_oot_baseline.py --train-years 2000-2006 --test-years 2008-2010 \
-  --sample-pct 20 --report reports/fannie_oot_crisis.md     # crisis stress: ROC 0.757 / PR 0.024
-python scripts/build_oot_baseline.py --train-years 2000-2022 --test-years 2023-2025 \
-  --sample-pct 20 --report reports/fannie_oot_recent.md     # recent OOT (run via nohup)
+# the bar: XGBoost on 57 no-leakage features, identical calendar window
+python scripts/build_oot_baseline.py --train-years 2016-2021 --test-years 2022-2023 \
+    --sample-pct 20 --report reports/fannie_oot_2022_2023.md
 
-# Dutch single-cutoff baseline + Gate G1 + hidden-segment ceiling
-python scripts/train_baseline.py --config configs/dutch_mortgages/baseline.yaml \
-  --book data/raw/loan_book.parquet --report reports/baseline_report.md   # Gate G1 = ROC 0.73
+# the FM: embeddings at each observation cutoff, then the adaptation ladder
+python scripts/extract_embeddings.py -c configs/fannie_mae/extract.yaml
+python scripts/evaluate_downstream.py -c configs/fannie_mae/evaluate.yaml
+python scripts/finetune.py -c configs/fannie_mae/finetune_oot.yaml --mode full   # frozen|lora|full
+```
+Reference result: FM full 0.8257 ROC / 0.0113 AP vs baseline 0.7913 / 0.0057 on 2022–23
+observations (2023–24 defaults). Guards: performing-at-observation gate, loan-disjoint,
+embargo, train-only downsampling.
+
+## 8. Package a checkpoint
+```bash
+python scripts/publish_model.py -c configs/fannie_mae/publish.yaml
+# → models/<name>/ (safetensors + config + tokenizer + card + load example)
 ```
 
 ## Verify
 ```bash
 ruff check . && pytest -q
 ```
+Each pipeline stage also has an artifact validator (`scripts/validate_*.py`) — run it against
+the stage's real output after any rerun.
 
 ## New asset class
-Generic split + classify work as-is. Write `configs/<asset>/{baseline,tokenizer}.yaml`, then run
-steps 2–5 — no code change.
-
-## 8. Downstream eval — the real verdict (planned, Phase E)
-The FM is judged by whether its `[USR]` embeddings beat the **OOT baseline (ROC 0.757)** at default
-prediction — not by MLM loss (DL-015). To be built:
-- `scripts/extract_embeddings.py` — `[USR]` embeddings from a checkpoint.
-- `scripts/evaluate_downstream.py` — FM embeddings vs the OOT baseline (the FM-vs-0.757 test).
-
-## Not built yet (TODO — land as stages complete)
-- **Parallel encoding** (`encode_dataset.py --workers`) — needed for the full-corpus M3 run (DL-015).
-- 8× H100 multi-GPU pretraining + W&B logging (M3; DL-009).
+See `docs/extending.md` — new `configs/<asset>/` recipes through the same scripts; the Dutch
+panel is the worked example.

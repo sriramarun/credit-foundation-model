@@ -1,8 +1,8 @@
 # Credit Foundation Model — Technical Report
 
-**finevals.ai × Sriram Krishnan · NVIDIA-sponsored (8× H100)**
-Open-source (Apache-2.0) framework for training credit foundation models (`credit_fm`), with a
-Fannie Mae Single-Family reference implementation.
+**finevals.ai · Apache-2.0**
+Open-source framework for training credit foundation models (`credit_fm`), with a reference
+implementation on 25 years of real-world mortgage performance data (Fannie Mae Single-Family).
 
 *Status: draft, 4 Jul 2026. Numbers are from the M5 out-of-time program.*
 

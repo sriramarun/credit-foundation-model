@@ -5,101 +5,121 @@ Guidance for Claude Code (and humans) working in this repo. Read this first when
 ## What this is
 
 An **open-source (Apache 2.0) framework for training credit foundation models** (`credit_fm`
-package) plus reference implementations. Co-founder engagement: **finevals.ai × Sriram
-Krishnan**, NVIDIA-sponsored (8× H100), ~12-week delivery.
+package) plus reference implementations, by **finevals.ai**. Compute: 8× H100 box (single-GPU
+runs today; DDP deliberately last).
 
-**Primary corpus: Fannie Mae Single-Family Loan Performance** (real-world US fixed-rate
-mortgages, ~25 years, ~100 quarterly parquet snapshots from GCS) — see
-`docs/data/fannie_mae.md`. The **Dutch mortgages** synthetic panel is now the controlled
-**validation/ablation** set (it carries the hidden `_segment` ceiling proof). **Invoice
-financing** remains a planned third reference.
+**Reference corpus: Fannie Mae Single-Family Loan Performance** (real-world US fixed-rate
+mortgages, 2000–2024, ~3.3B loan-month rows; pretraining uses a validated 4% loan-hash
+sample) — see `docs/data/fannie_mae.md` + `notebooks/00_data_bible.ipynb`. The **Dutch
+mortgages** synthetic panel is the controlled **validation/ablation** set (it carries the
+hidden `_segment` ceiling proof).
 
 Approach: **encoder-only, masked-language-modelling** over tabular credit-event sequences
 (PRAGMA-style), three-branch architecture, key-value-time tokenization. The thesis: a sequence
-foundation model beats point-in-time tabular baselines (XGBoost) on credit tasks.
+foundation model beats point-in-time tabular baselines (XGBoost) on credit tasks — **validated
+out-of-time** (see Status).
 
 ## Architecture (locked — see `docs/decision_log.md`)
 
 - **Encoder-only + MLM** (not decoder/causal) — DL-001.
-- **Three-branch encoders**: Profile State (static fields) + Event (per-cutoff dynamic fields)
-  + History (contextualizes the sequence) → `[USR]` per-loan embedding — DL-002.
-- **Key-value-time tokenization**: each field → key token + value token(s) + temporal coord — DL-003.
-- **30M params default** (Chinchilla-honest on ~600M synthetic tokens) — DL-004.
-- **HuggingFace primary**, NeMo optional — DL-006.
-- **Open question DL-009**: W&B hosted vs offline/self-hosted — resolve before pretraining
-  (sovereign-cloud / data-residency requirement).
+- **Three-branch encoders**: Profile (static fields) + Event (per-month dynamics) + History
+  (contextualizes the sequence) → `[USR]` per-loan embedding — DL-002. ~26M @ dim 384;
+  RoPE/RMSNorm/SwiGLU; architecture FROZEN since M2.
+- **Key-value-time tokenization**: fused `field=value` tokens + `t=`/`cal=<YYYYQ#>` time
+  coordinates; anchored quantile bins — DL-003/011/012. Frozen vocab `tokenizer.json`
+  (552 tokens, full-corpus fit).
+- **Encode-once shards + flat `(B,L)` batches** — DL-014.
+- **Open question DL-009**: W&B hosted vs offline/self-hosted (sovereign-cloud requirement);
+  runs currently log to stdout + GCS checkpoints.
 
 ## Repo layout
-src/credit_fm/ tokenizer/ (KVT) · models/ (3-branch) · data/ · training/ · inference/ · evaluation/ · utils/
-scripts/ prepare_data, classify_schema, train_baseline, train_tokenizer, pretrain,
-extract_embeddings, evaluate_downstream, score_portfolio, ingest_fannie_mae, setup_container.sh
-configs/ fannie_mae/ (PRIMARY) · dutch_mortgages/ (validation)
-notebooks/ 00_smoke_test_splits, 01–05 walkthroughs
-reference_implementations/ fannie_mae/ (primary) · dutch_mortgages/
-models/ checkpoints (Git LFS) reports/ baseline_report.md, ...
-docs/ architecture, tokenization, training, evaluation, decision_log, model_cards/
+src/credit_fm/ tokenizer/ (KVT) · models/ (3-branch) · data/ · training/ · utils/
+scripts/ one config-driven script per stage: ingest_fannie_mae · prepare_data · classify_schema ·
+train_tokenizer · encode_dataset · pretrain · extract_embeddings · evaluate_downstream ·
+finetune · train_baseline · build_oot_baseline · publish_model · profile/compare ·
+validate_ingest/validate_splits (artifact auditors) · setup_container.sh
+configs/ fannie_mae/ (reference) · dutch_mortgages/ (validation) — common.yaml + stage recipes
+notebooks/ 00_data_bible · 01_data_splits · 02_schema_classification (+ build_*.py generators —
+edit the builder, never the .ipynb)
+reference_implementations/ fannie_mae/ · dutch_mortgages/ (runbook READMEs)
+models/ packaged checkpoints · reports/ canonical run reports
+docs/ architecture · tokenization · training · evaluation · decision_log · technical_report ·
+model_cards/ · data_cards/
 tests/ unit + artifact-validator tests
 
-All of `src/credit_fm/` is implemented (tokenizer, data, models, training, utils); dead plan-A scaffold subpackages were removed in the 2026-07 cleanup.
-## Current status (Week 1 done)
-**Done & on `main`:** repo + scaffold + CI · H100 container setup · loan-stratified **temporal**
-split (`prepare_data.py`) · reproducible 71-field classification → `configs/dutch_mortgages/tokenizer.yaml`
-(42 features) · XGBoost baseline (`train_baseline.py`) · decision log DL-001…010.
-**Baseline / Gate G1** (the bar the FM must beat): on the honest task (no-leakage features +
-performing-at-observation gate, predict *new* defaults) = **ROC-AUC 0.73 / PR-AUC 0.046**.
-A leaky/ungated config scores 0.93 — do **not** quote that as the baseline.
-**Architectural proof:** a hidden `_segment` latent (in `loan_book.parquet`, NOT the panel)
-drives a **16–32× default spread** invisible to ESMA-feature models → the XGBoost ceiling the
-FM is meant to break. `train_baseline.py --book data/raw/loan_book.parquet` shows it.
-**Next:** tokenizer build (`tokenizer/vocabulary.py` → `numeric_bucketer` → `categorical`/
-`temporal` → `KVTTokenizer`, vocab on `train` only) → Milestone **M1**.
+## Status (Jul 2026)
+
+**The science is done; remaining work is documentation/release + queued v1.1 science.**
+- **OOT headline (M5):** head trained on Dec-2016…2021 observations, tested on Dec-2022/2023
+  (defaults 2023–24, never seen): **FM full 0.8257 ROC / 0.0113 AP beats XGB 0.7913 / 0.0057**
+  (ROC +0.034, AP +98%). Ladder: frozen 0.7309 < LoRA 0.8068 < full 0.8257. Benign window
+  (no regime shift): features win narrowly, as expected.
+- **Pipeline validated end-to-end** (ingest + split so far): unit tests + artifact validators
+  (`validate_ingest`, `validate_splits`), incl. negative controls. 4% sample proven
+  REPRESENTATIVE vs the 100% book (pooled default 0.671% vs 0.648%).
+- **Open:** score_portfolio (#6), sample outputs (#9), research paper (#14), tech-report final
+  review (#17), HF weights publish (deferred), crisis-OOT rerun, calibration, DDP.
+  **v1.1 science queued:** multi-objective pretraining (next-period heads), numeric
+  value-embeddings, macro context — see internal PLAN.md.
+
 ## Data (none committed — all gitignored)
-- **Fannie Mae (PRIMARY):** ~100 quarterly parquet snapshots in GCS → `scripts/ingest_fannie_mae.py`
-  (`--gcs gs://… --quarters 2018Q1 2018Q2`) writes `data/raw/fannie_mae/panel.parquet` with derived
-  `origination_date`, `reporting_date`, `default_event` (D180 or Zero-Balance credit event),
-  `prepay_event`, `is_performing`. Then `prepare_data.py --origination-col origination_date`
-  (real origination, no seasoning derivation). Config: `configs/fannie_mae/baseline.yaml`;
-  notes: `docs/data/fannie_mae.md`. GCS auth via `GOOGLE_APPLICATION_CREDENTIALS` + `gcsfs`.
-- **Dutch mortgages (VALIDATION):** `data/raw/all_cutoffs.parquet` (canonical; 500k loans × 24 monthly cutoffs, 71
-  ESMA Annex 2 cols). Source: HF `Algoritmica/green-lion-2024-2025` / deeploans generator.
-  (Older `Overall_2024_2025_all_months.parquet` is a prior extract.)
-- **Splits:** `python scripts/prepare_data.py --input data/raw/all_cutoffs.parquet` →
-  `data/processed/{train,val,test}.parquet` + `splits.csv` + `splits.meta.json`. **Always run
-  this first**; the baseline/notebook read its output.
-- **Latents (eval-only):** `data/raw/loan_book.parquet` has `_segment`, `_latent_fragility`,
-  `_cohort_quality`. **NEVER use these as model features** — they're ground-truth only, not in
-  production. Use only for the ceiling validation. (The matching file is the generator run whose
-  `_segment` predicts this panel's defaults — verify with a segment-conditional default rate.)
-- **No `origination_date` column** (Dutch panel only) — its temporal split derives origination =
-  `reporting_date − seasoning_months` (DL-007). Fannie has a real origination date.
+- **Mortgage reference:** GCS `gs://sriram-credit-fm-data` — raw Hive-partitioned source →
+  `scripts/ingest_fannie_mae.py -c configs/fannie_mae/ingest_2000_2024.yaml` writes the panel
+  with derived `origination_date`, `reporting_date`, `default_event` (D180 or Zero-Balance
+  credit event), `prepay_event`, `is_performing`. Auth via `GOOGLE_APPLICATION_CREDENTIALS`
+  (`/workspace/.gcloud/credit-fm-sa.json`) + `gcsfs` — note: the container's Arrow build has
+  **no native GCS**; always read `gs://` through gcsfs/storage helpers.
+- **Dutch mortgages (validation):** `data/raw/all_cutoffs.parquet` (500k loans × 24 monthly
+  cutoffs, 71 ESMA Annex 2 cols; HF `Algoritmica/green-lion-2024-2025`). No origination column —
+  the split derives origination = `reporting_date − seasoning_months` (DL-007).
+- **Latents (eval-only):** `data/raw/loan_book.parquet` has `_segment` etc. — **NEVER model
+  features**; ceiling validation only.
+- **Splits:** `prepare_data.py -c configs/fannie_mae/prepare.yaml` →
+  `{train,val,test}.parquet + splits.csv + splits.meta.json`; current reference split =
+  `run_2000_2024` (reporting_max 2022-12-31). Always validate with `validate_splits.py`.
+
 ## Conventions
-- Python 3.10+. **`ruff`** clean + **`pytest`** green before every commit. Type hints on public
-  APIs; Google-style docstrings. Every file: SPDX header + `Copyright (c) 2026 finevals.ai`.
+- Python 3.10+. **`ruff`** clean + **`pytest`** green before every commit (ruff lints notebooks
+  too — one statement per line in generated cells). Type hints on public APIs; Google-style
+  docstrings. Every file: SPDX header + `Copyright (c) 2026 finevals.ai`.
 - **Leakage rules** (critical for credit): split by `loan_id` (never row); temporal by
-  origination; vocab/bins fit on `train` only (DL-008). Dutch leakage = the 8 contemporaneous-state
-  columns (`arrears_bucket`, `performing_status`, `default_crr_flag`, `foreclosure_flag`,
-  `days_past_due`, `arrears_amount`, `forbearance_flag`, `restructuring_flag`); Fannie leakage =
-  current delinquency status / zero-balance / foreclosure-disposition / loss columns
-  (see `configs/fannie_mae/baseline.yaml`). The honest baseline drops them and gates to
+  origination; vocab/bins fit on `train` only (DL-008); evaluation is calendar-OOT with
+  loan-disjoint + embargo guards. Fannie leakage = current delinquency / zero-balance /
+  foreclosure-disposition / loss columns (see `configs/fannie_mae/baseline.yaml`); Dutch
+  leakage = the 8 contemporaneous-state columns. The honest baseline drops them and gates to
   performing-at-observation.
-- **Config is generated, not hand-edited**: `tokenizer.yaml` comes from `scripts/classify_schema.py`
-  (its header records the regenerate command). Redundancy pruning lives in code (`find_redundant`),
-  not manual edits.
+- **Two-layer validation per stage:** unit tests (logic, synthetic) + an artifact validator
+  that re-derives the produced output (`scripts/validate_*.py`); validators must FAIL on
+  corrupted input (negative control).
+- **Schema configs:** `classify_schema.py` generates reproducibly for Dutch; the Fannie
+  `tokenizer.yaml` is **curated** on top of its suggestions (leakage exclusion, ARM/IO drops,
+  anchors) — teaching the classifier the leakage list is a tracked cleanup.
+- **Notebooks are generated** — edit `notebooks/build_*.py`, rerun it; never hand-edit `.ipynb`.
+
 ## Dev workflow (IMPORTANT)
 - **All git happens on the H100 container**, not locally. The user drives edits/commits there.
 - **GitHub is the hub**: branch → PR → merge. Don't commit to `main` directly.
 - Container bring-up: `bash scripts/setup_container.sh` (restart-proof venv under `/workspace`;
   see `docs/container_setup.md`). Secrets in `/workspace/secrets.env` (never committed).
 - `git` has no pager on the box if `core.pager=cat` is set; otherwise press `q` to exit pagers.
+
 ## Internal trackers (NOT in this repo)
 Project plan, backlog, dated progress, deliverables manifest, and weekly status live **outside
-the repo** in `_credit-fm-internal/` (sibling folder, never pushed). Keep them in sync when
-status changes. This `CLAUDE.md` is the public-repo handoff; the internal folder is the planning
-source of truth.
+the repo** in `_credit-fm-internal/` (sibling folder, never pushed; tracker of record is the
+Project Manager xlsx there). This `CLAUDE.md` is the public-repo handoff; the internal folder
+is the planning source of truth.
+
 ## Gotchas learned
-- `.gitignore` must anchor data rules (`data/*`, not bare `data/`) — a bare `data/` once silently
-  dropped the entire `src/credit_fm/data/` module from commits.
-- The synthetic panel is rule-based, so baselines run high; report the honest (gated, no-leakage)
-  number and the segment-ceiling context, not the inflated one.
-- NGC PyTorch image ships without `ensurepip`; the venv needs `--system-site-packages` (to keep
-  the image's CUDA torch) and `pythonX.Y-venv` installed — both handled by `setup_container.sh`.
+- `.gitignore` must anchor data rules (`data/*`, not bare `data/`) — a bare `data/` once
+  silently dropped the entire `src/credit_fm/data/` module from commits.
+- The container's Arrow build lacks GCS: `pd.read_parquet("gs://…")` raises
+  `ArrowNotImplementedError` — read via gcsfs (see `validate_splits.py`).
+- Fannie loan_ids are numeric-looking strings: a CSV round-trip coerces them to int — always
+  compare ids as `str`.
+- The synthetic Dutch panel is rule-based, so baselines run high; report the honest (gated,
+  no-leakage) number and the segment-ceiling context, not the inflated one.
+- NGC PyTorch image ships without `ensurepip`; the venv needs `--system-site-packages` and
+  `pythonX.Y-venv` — both handled by `setup_container.sh`. Never `pip install` RAPIDS/cuDF over
+  the image's pinned numpy/pandas (it broke the venv once; GPU tokenizer engine parked).
+- nullable-boolean labels: `default_event`/`is_performing` are pandas `boolean` (NA from
+  unknown delinquency); every consumer must `.fillna(False)`.

@@ -1,7 +1,7 @@
 # Tokenization
 
 Key-value-time (KVT) scheme. Each loan becomes one sequence of **fused `field=value` tokens**
-(TabBERT/NVIDIA-TFM lineage — one token per field/value pair, *not* separate key + value
+(TabBERT / transaction-FM lineage — one token per field/value pair, *not* separate key + value
 tokens), routed to a **branch** and anchored in time. Fit on `train` only (DL-008).
 
 ## Sequence layout
@@ -43,16 +43,20 @@ val/test/full leaks distribution into the tokenizer. Build the split first
 (`scripts/prepare_data.py`), then `scripts/train_tokenizer.py` writes `configs/<asset>/tokenizer.json`
 (config + bin edges + categories + calendar + vocab) plus a QA report (roundtrip %, OOV %, length).
 
-**Fannie Mae (primary), fit on the real train split (25.6M rows):** **440 tokens** — 9 special +
-profile (16 numeric / 15 categorical) + event (11 numeric / 1 categorical) + `t=` + `cal=`.
-100% lossless roundtrip, 0% OOV. Median ~418 tokens/loan on the 2016–2017 slice; on the full
-multi-year corpus loans hit the `max_events=60` cap (~1000 tokens) → size the model context at 1024.
+**Mortgage reference corpus (Fannie Mae), fit on the full 2000–2022 train split:** **552 tokens**
+— 9 special + 431 `field=value` + 18 `t=` + 94 `cal=` (one per year-quarter across 25 years).
+100% lossless roundtrip, 0% OOV. On the full multi-year corpus loans hit the `max_events=60` cap
+(~1000 tokens) → size the model context at 1024. (An earlier 440-token vocab fit on the
+2016–2017 dev slice was superseded by this full-corpus fit.)
 
 ## Field classification & config generation
 
-Per-asset field roles live in `configs/<asset>/tokenizer.yaml`, generated **reproducibly from the
-data** by `scripts/classify_schema.py` (do not hand-edit — the file header records the regenerate
-command). For each column it determines:
+Per-asset field roles live in `configs/<asset>/tokenizer.yaml`. `scripts/classify_schema.py`
+derives the classification **reproducibly from the data** — for the Dutch panel the file is
+fully generated; for the mortgage reference it is **curated on top of the classifier's
+suggestions** (leakage-list exclusion, ARM/IO drops for a fixed-rate book, regulatory bin
+anchors — see the honesty note in `notebooks/02_schema_classification.ipynb`). For each column
+the classifier determines:
 
 - **role** — `id` / `static` (constant within a loan → Profile branch) / `dynamic` (varies per
   cutoff → Event branch).

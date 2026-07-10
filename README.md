@@ -1,104 +1,145 @@
 # Credit Foundation Model Framework
 
 An **open-source framework (Apache 2.0) for training credit foundation models** on tabular
-credit panel data — plus reference implementations across asset classes. Built so banks and
-financial institutions can train their own credit foundation models on their own data without
-building the underlying infrastructure from scratch.
+credit panel data. Built by **[finevals.ai](https://finevals.ai)** so banks and financial
+institutions can train their own credit foundation models on their own data without building
+the underlying infrastructure from scratch.
 
-The **primary corpus is the Fannie Mae Single-Family Loan Performance dataset** — ~25 years of
-real-world US fixed-rate mortgages. A synthetic Dutch RMBS panel serves as a controlled
-validation/ablation set, and invoice financing is a planned third asset class.
+The thesis: a **sequence foundation model** — one that reads a borrower's full month-by-month
+history — beats point-in-time tabular models (XGBoost) on credit tasks. The framework ships
+with a reference implementation on 25 years of real-world mortgage performance data, where
+that thesis is validated **out-of-time**: trained on the past, tested on genuinely unseen
+future years.
 
-Co-founder engagement between **finevals.ai** and **Sriram Krishnan**, sponsored by
-**NVIDIA** (8× H100), 3-month delivery.
+## Headline result (out-of-time)
+
+Fine-tuned on observation snapshots from 2016–2021 and tested on **2022/2023 snapshots whose
+12-month default windows (2023–24) neither the model nor its head ever saw**:
+
+| Model | ROC-AUC | PR-AUC (AP) |
+|---|--:|--:|
+| XGBoost baseline (57 no-leakage features, identical window) | 0.7913 | 0.0057 |
+| **Credit FM (full fine-tune)** | **0.8257** | **0.0113** |
+
+Both metrics beat the baseline — ROC +0.034, **AP +98%** — on real, rare-event data
+(~0.13% default rate). See [`docs/technical_report.md`](docs/technical_report.md).
 
 ## Approach
 
 Encoder-only (BERT-style) architecture with masked-language-modelling pretraining over
-credit-event sequences, synthesizing two published references:
+credit-event sequences, following the PRAGMA line of work (encoder-only, three-branch,
+published +130% PR-AUC on credit scoring) with the transaction-foundation-model blueprint as
+the engineering baseline.
 
-- **PRAGMA** (Revolut + NVIDIA, 2026) — primary architectural reference (encoder-only,
-  three-branch, +130% PR-AUC on credit scoring).
-- **NVIDIA Transaction Foundation Model** — reference for the training stack.
+The framework is **schema-agnostic and config-driven**: adapt to a new asset class by writing
+YAML recipes, then running the same scripts — no code changes.
 
-The framework is schema-agnostic: adapt to a new asset class by writing YAML (tokenizer,
-model, training, downstream tasks), then running the standard scripts.
+## Architecture (three-branch encoder)
+
+```
+static fields ─▶ Profile Encoder (3L) ──┐
+                                        ├─▶ History Encoder (6L) ─▶ [USR] loan embedding
+monthly events ─▶ Event Encoder (5L) ───┘
+```
+
+- **Key-value-time (KVT) tokenization** — every field becomes a fused `field=value` token,
+  each monthly event block anchored by a `t=<age>` coordinate and a `cal=<YYYYQ#>` calendar
+  token (the macro-regime signal). Numeric fields use quantile bins with forced boundaries at
+  regulatory cliffs (e.g. LTV 80/90/95/97).
+- **Pretraining**: MLM with three masking sources (15% tokens / 10% whole events / 10% field
+  types); vocabulary and bins fit on the train split only.
+- **Downstream**: frozen `[USR]` embeddings + XGBoost, or a classification head fine-tuned
+  frozen / LoRA / full — interchangeable heads on the same backbone.
+- ~26M parameters at dim 384 (Chinchilla-honest for the current corpus); RoPE, RMSNorm, SwiGLU.
+
+## Data
+
+The **reference corpus** is the public
+[Fannie Mae Single-Family Loan Performance dataset](https://capitalmarkets.fanniemae.com/credit-risk-transfer/single-family-credit-risk-transfer/fannie-mae-single-family-loan-performance-data)
+— ~25 years of US fixed-rate mortgages (2000–2024, ~3.3B loan-month rows; pretraining uses a
+validated 4% loan-hash sample). A synthetic Dutch RMBS panel (ESMA Annex 2) serves as a
+controlled validation/ablation set.
+
+Every stage enforces **leakage discipline**: splits are by loan (never by row) and temporal by
+origination; outcome/contemporaneous-state columns are excluded from features; the vocabulary
+is fit on train only; evaluation is calendar-out-of-time with loan-disjoint and embargo guards.
+Start with the data bible: [`notebooks/00_data_bible.ipynb`](notebooks/00_data_bible.ipynb).
 
 ## What's in here
 
 | Component | Location | Description |
 |-----------|----------|-------------|
-| Framework (`credit_fm`) | `src/credit_fm/` | Tokenizer, three-branch model, data, training, inference, evaluation |
-| Fannie Mae reference (**primary**) | `configs/fannie_mae/`, `reference_implementations/fannie_mae/` | Real-world US single-family fixed-rate mortgages (~25y), 30M checkpoint |
-| Dutch mortgages reference (validation) | `configs/dutch_mortgages/`, `reference_implementations/dutch_mortgages/` | ESMA Annex 2 synthetic RMBS; carries the hidden `_segment` ceiling proof |
-| Invoice financing reference | `configs/invoice_financing/`, `reference_implementations/invoice_financing/` | Third asset class (data TBD) |
-| Dashboard | `app/` | FastAPI demo over the four pipeline stages |
+| Framework (`credit_fm`) | `src/credit_fm/` | KVT tokenizer, three-branch model, data layer, training, utils |
+| Pipeline scripts | `scripts/` | one config-driven script per stage (ingest → … → finetune) + artifact validators |
+| Recipes | `configs/fannie_mae/`, `configs/dutch_mortgages/` | YAML per asset class; stage recipes + generated schemas |
+| Notebooks | `notebooks/` | `00_data_bible` · `01_data_splits` · `02_schema_classification` (builder-generated) |
+| Reference implementations | `reference_implementations/` | per-asset runbooks |
+| Docs | `docs/` | architecture · tokenization · training · evaluation · decision log · cards |
 
 ## Differentiation
 
-1. **Open source** — weights, code, tokenizers, references all Apache 2.0 (PRAGMA is proprietary).
-2. **Real-world primary corpus** — pretrained on Fannie Mae's 25-year single-family performance
-   data; the Dutch validation set is ESMA Annex 2-aligned byte-for-byte.
+1. **Open source** — weights, code, tokenizers, references all Apache 2.0 (comparable
+   industrial systems are proprietary).
+2. **Real-world corpus, honest evaluation** — public 25-year mortgage data; calendar
+   out-of-time verdicts with loan-disjoint + embargo guards, against a strong no-leakage
+   XGBoost bar.
 3. **Sovereign-cloud-deployable** — runs entirely on customer infrastructure, no external APIs.
-
-## Architecture (three-branch encoder)
-
-```
-static fields ─▶ Profile State Encoder (3L) ─┐
-                                              ├─▶ History Encoder (4–6L) ─▶ [USR] embedding
-per-cutoff events ─▶ Event Encoder (4–5L) ────┘
-```
-
-Pretraining: MLM with three masking sources (15% tokens / 10% events / 10% semantic types).
-Downstream: embedding probe (frozen) or LoRA fine-tuning. Default size **30M**
-(Chinchilla-honest on ~600M synthetic tokens).
+4. **Validated pipeline** — each stage ships unit tests plus an artifact validator that
+   re-derives the produced output (`scripts/validate_*.py`).
 
 ## Quickstart
 
-On an H100 / NGC PyTorch container, see [`docs/container_setup.md`](docs/container_setup.md)
-for a restart-proof bring-up (or run `bash scripts/setup_container.sh`). Otherwise:
+Every script follows one grammar: `-c <recipe.yaml>` plus dotted overrides
+(`--key.path value`). On a GPU container see
+[`docs/container_setup.md`](docs/container_setup.md); otherwise:
 
 ```bash
-pip install -e .            # installs the credit_fm package
-# Fannie Mae (primary), dev sample end to end:
-python scripts/ingest_fannie_mae.py --gcs gs://<bucket>/<prefix> --quarters 2018Q1 2018Q2 --out data/raw/fannie_mae
-python scripts/prepare_data.py --input data/raw/fannie_mae/panel.parquet --origination-col origination_date
-python scripts/train_baseline.py --config configs/fannie_mae/baseline.yaml --report reports/fannie_baseline_report.md
-# Dutch mortgages (validation) reference, end to end:
-bash reference_implementations/dutch_mortgages/train.sh
-bash reference_implementations/dutch_mortgages/evaluate.sh
-```
+pip install -e .
 
-Walkthrough notebooks: `notebooks/01_data_and_baseline` → `05_downstream_evaluation`.
+# 1. ingest the raw source into a per-loan monthly panel (labels derived)
+python scripts/ingest_fannie_mae.py -c configs/fannie_mae/ingest.yaml
+
+# 2. loan-stratified temporal split (+ artifact audit)
+python scripts/prepare_data.py -c configs/fannie_mae/prepare.yaml
+python scripts/validate_splits.py --dir <out_dir>
+
+# 3-4. field schema + fit the KVT tokenizer (train split only)
+python scripts/classify_schema.py -c configs/fannie_mae/classify.yaml
+python scripts/train_tokenizer.py -c configs/fannie_mae/tokenizer_fit.yaml
+
+# 5-6. encode-once shards + MLM pretraining
+python scripts/encode_dataset.py -c configs/fannie_mae/encode.yaml
+python scripts/pretrain.py -c configs/fannie_mae/pretrain.yaml
+
+# 7-8. embeddings + the out-of-time verdict
+python scripts/extract_embeddings.py -c configs/fannie_mae/extract.yaml
+python scripts/build_oot_baseline.py --train-years 2016-2021 --test-years 2022-2023
+python scripts/finetune.py -c configs/fannie_mae/finetune_oot.yaml
+```
 
 ## Repository layout
 
-See [`docs/architecture.md`](docs/architecture.md) for full rationale.
+See [`docs/architecture.md`](docs/architecture.md) for the full map.
 
 ```
-src/credit_fm/   tokenizer/ models/ data/ training/ inference/ evaluation/ utils/
-configs/         fannie_mae/ (primary) · dutch_mortgages/ · invoice_financing/   (YAML per asset class)
-scripts/         ingest_fannie_mae · prepare_data · train_baseline · train_tokenizer · pretrain · …
-notebooks/       01–05 pipeline walkthroughs
-reference_implementations/   per-asset README, cards, train.sh, evaluate.sh
-models/          pretrained checkpoints (Git LFS)
-app/             FastAPI dashboard
-docs/            architecture · tokenization · training · evaluation · extending · deployment
-tests/           tokenizer · models · data · training · evaluation · e2e
+src/credit_fm/   tokenizer/ models/ data/ training/ utils/
+configs/         fannie_mae/ · dutch_mortgages/          (YAML recipes per asset class)
+scripts/         ingest · prepare · classify · tokenizer · encode · pretrain ·
+                 extract · evaluate · finetune · baselines · validators · publish
+notebooks/       00_data_bible · 01_data_splits · 02_schema_classification (+ builders)
+reference_implementations/   per-asset runbooks
+models/          packaged checkpoints
+docs/            architecture · tokenization · training · evaluation · decision_log ·
+                 technical_report · model_cards/ · data_cards/
+tests/           unit tests + artifact-validator tests
 ```
-
-## Existing assets used
-
-- Fannie Mae [Single-Family Loan Performance Dataset](https://capitalmarkets.fanniemae.com/credit-risk-transfer/single-family-credit-risk-transfer/fannie-mae-single-family-loan-performance-data) (primary corpus)
-- Synthetic Dutch RMBS dataset: [`Algoritmica/green-lion-2024-2025`](https://huggingface.co/datasets/Algoritmica/green-lion-2024-2025)
-- [deeploans synthetic-data-designer](https://github.com/Algoritmica-ai/deeploans/tree/main/synthetic-data-designer)
-- [NVIDIA TFM blueprint](https://github.com/NVIDIA-AI-Blueprints/transaction-foundation-model)
 
 ## References
 
-- PRAGMA — Ostroukhov et al., 2026 (arXiv:2604.08649)
+- PRAGMA — Ostroukhov et al., 2026 (arXiv:2604.08649) — primary architectural reference
+- [Transaction foundation model blueprint](https://github.com/NVIDIA-AI-Blueprints/transaction-foundation-model) — engineering baseline
 - BERT — Devlin et al., 2019 · LoRA — Hu et al., 2021 · Chinchilla — Hoffmann et al., 2022
-- ESMA Annex 2 — Commission Delegated Regulation (EU) 2020/1224
+- Synthetic Dutch RMBS: [`Algoritmica/green-lion-2024-2025`](https://huggingface.co/datasets/Algoritmica/green-lion-2024-2025) · ESMA Annex 2 — (EU) 2020/1224
 
 ## License
 

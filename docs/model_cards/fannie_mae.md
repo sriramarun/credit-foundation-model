@@ -1,10 +1,10 @@
 # Model Card — Credit Foundation Model (Fannie Mae reference, M5)
 
-*finevals.ai × Sriram Krishnan · NVIDIA-sponsored · Apache-2.0 · card v1, 4 Jul 2026*
+*finevals.ai · Apache-2.0 · card v1, 4 Jul 2026*
 
 ## Model details
 
-- **Developed by:** finevals.ai (with Sriram Krishnan), NVIDIA-sponsored.
+- **Developed by:** finevals.ai.
 - **Model type:** encoder-only transformer, masked-language-modelling (MLM) over tabular
   credit-event sequences. Produces a per-loan embedding, not text.
 - **Architecture:** three-branch encoder (Profile / Event / History) with key–value–time (KVT)
