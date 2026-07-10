@@ -33,6 +33,11 @@ SPLITS = ("train", "val", "test")
 
 
 def _read(path: str, columns=None) -> pd.DataFrame:
+    # read via gcsfs for gs:// (this Arrow build has no native GCS); column projection still applies
+    if path.startswith("gs://"):
+        import gcsfs
+        with gcsfs.GCSFileSystem().open(path[len("gs://"):]) as f:
+            return pd.read_parquet(f, columns=columns)
     return pd.read_parquet(path, columns=columns)
 
 
@@ -75,7 +80,9 @@ def main() -> int:
     frames = {}
     for s in SPLITS:
         frames[s] = _read(_join(args.dir, f"{s}.parquet"), columns=cols)
-    loans = {s: set(frames[s][id_col].unique()) for s in SPLITS}
+    # normalise ids to str everywhere — Fannie loan_ids are numeric-looking, and CSV round-trips
+    # coerce them to int, which would spuriously mismatch the parquet's string ids
+    loans = {s: set(frames[s][id_col].astype(str).unique()) for s in SPLITS}
     chk("all three split parquets non-empty", all(len(frames[s]) for s in SPLITS),
         " ".join(f"{s}={len(frames[s]):,}rows/{len(loans[s]):,}loans" for s in SPLITS))
 
@@ -84,8 +91,8 @@ def main() -> int:
     chk("A: train/val/test loan-sets are disjoint", not (tv or tt or vt),
         f"overlaps train∩val={len(tv)} train∩test={len(tt)} val∩test={len(vt)}")
 
-    # C) completeness vs splits.csv
-    csv = pd.read_csv(io.StringIO(_read_text(_join(args.dir, "splits.csv"))))
+    # C) completeness vs splits.csv (force id as str so numeric loan_ids don't parse to int)
+    csv = pd.read_csv(io.StringIO(_read_text(_join(args.dir, "splits.csv"))), dtype={id_col: str})
     csv_by_split = {s: set(csv.loc[csv["split"] == s, id_col]) for s in SPLITS}
     chk("C: parquet membership matches splits.csv",
         all(loans[s] == csv_by_split[s] for s in SPLITS),
