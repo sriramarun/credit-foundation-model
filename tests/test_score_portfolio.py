@@ -61,6 +61,8 @@ def _panel(n_loans=12, corrupt_future=False, non_performing=("L0", "L1")) -> pd.
                 "current_interest_rate": r, "current_upb": upb,
                 # gate: non-performing at the cutoff = the June row is False
                 "is_performing": not (lid in non_performing and m == 6),
+                # forward label: L2/L5 default in month 7 (after the June cutoff) — for eval tests
+                "default_event": (lid in ("L2", "L5") and m == 7),
             })
     return pd.DataFrame(rows)
 
@@ -197,3 +199,59 @@ def test_validate_scores_fails_on_bad_scores(tmp_path):
     v = _run("scripts/validate_scores.py", "--scores", str(out))
     assert v.returncode != 0
     assert "FAIL" in v.stdout
+
+
+def test_validate_scores_quality_eval_runs(tmp_path):
+    """--labeled-panel joins the forward default label and reports ROC/AP (both classes present)."""
+    panel = _panel()
+    tok, tok_path = _tok(tmp_path, panel)
+    ckpt = _save_ft_checkpoint(tmp_path, tok)
+    panel_path = tmp_path / "panel.parquet"
+    panel.to_parquet(panel_path)
+    out = tmp_path / "scores.parquet"
+    cfg = _write_scoring_cfg(tmp_path, ckpt, tok_path, panel_path, out)
+    assert _run("scripts/score_portfolio.py", "-c", str(cfg)).returncode == 0
+
+    v = _run("scripts/validate_scores.py", "--scores", str(out),
+             "--labeled-panel", str(panel_path), "--horizon", "12")
+    assert v.returncode == 0, v.stdout + v.stderr
+    assert "forward-label eval" in v.stdout and "ROC=" in v.stdout
+    assert "population" in v.stdout and "matched_in_scored" in v.stdout   # reconciliation shown
+    assert "G: scored loans all exist in the labeled panel" in v.stdout
+    assert "ALL CHECKS PASSED" in v.stdout
+
+
+def test_validate_scores_catches_wrong_population(tmp_path):
+    """A scored file with a loan that isn't in the labeled panel = wrong snapshot -> G FAILS."""
+    panel = _panel()
+    tok, tok_path = _tok(tmp_path, panel)
+    ckpt = _save_ft_checkpoint(tmp_path, tok)
+    panel_path = tmp_path / "panel.parquet"
+    panel.to_parquet(panel_path)
+    out = tmp_path / "scores.parquet"
+    cfg = _write_scoring_cfg(tmp_path, ckpt, tok_path, panel_path, out)
+    assert _run("scripts/score_portfolio.py", "-c", str(cfg)).returncode == 0
+
+    df = pd.read_parquet(out)
+    df.loc[df.index[0], "loan_id"] = "L9999_not_in_panel"       # a loan the panel never had
+    df.to_parquet(out)
+    v = _run("scripts/validate_scores.py", "--scores", str(out), "--labeled-panel", str(panel_path))
+    assert v.returncode != 0
+    assert "G: scored loans all exist in the labeled panel" in v.stdout and "FAIL" in v.stdout
+
+
+def test_validate_scores_min_roc_gate_can_fail(tmp_path):
+    """A random-init model can't clear ROC 0.99 -> the --min-roc gate FAILS (proves it bites)."""
+    panel = _panel()
+    tok, tok_path = _tok(tmp_path, panel)
+    ckpt = _save_ft_checkpoint(tmp_path, tok)
+    panel_path = tmp_path / "panel.parquet"
+    panel.to_parquet(panel_path)
+    out = tmp_path / "scores.parquet"
+    cfg = _write_scoring_cfg(tmp_path, ckpt, tok_path, panel_path, out)
+    assert _run("scripts/score_portfolio.py", "-c", str(cfg)).returncode == 0
+
+    v = _run("scripts/validate_scores.py", "--scores", str(out),
+             "--labeled-panel", str(panel_path), "--min-roc", "0.99")
+    assert v.returncode != 0
+    assert "H: ROC-AUC >= 0.99" in v.stdout
