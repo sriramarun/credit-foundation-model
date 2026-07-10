@@ -15,8 +15,9 @@ Two layers, mirroring the pipeline convention:
 * **Quality** (``--labeled-panel``) — first *reconcile the population* (scored loans exist in the
   panel, dup/coverage counts — a plausible ROC on the wrong snapshot is a trap), then score against
   ground truth: join the forward ``default_event`` label (default within ``--horizon`` months of the
-  cutoff) and report ROC-AUC / PR-AUC. Check G = scored ⊆ panel; H (with ``--min-roc``) gates the
-  ROC. Only meaningful for a **past** cutoff whose outcomes are already in the panel.
+  cutoff) and report ROC-AUC / PR-AUC **plus a recall@K / lift table** ("review the top K% riskiest,
+  catch what share of defaults?" — the operational metric). Check G = scored ⊆ panel; H (with
+  ``--min-roc``) gates the ROC. Only meaningful for a **past** cutoff whose outcomes exist.
 
     python scripts/validate_scores.py --scores gs://.../portfolio_scores.parquet
     # + quality: reproduce the model's ~0.82 on a labeled past cutoff
@@ -32,6 +33,7 @@ import os
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 
@@ -63,6 +65,8 @@ def main() -> int:
     ap.add_argument("--label-col", default="default_event")
     ap.add_argument("--time-col", default="reporting_date")
     ap.add_argument("--min-roc", type=float, help="if set, PASS/FAIL on ROC-AUC >= this")
+    ap.add_argument("--top-k", type=float, nargs="+", default=[0.01, 0.05, 0.10, 0.20],
+                    help="review-budget fractions for the recall@K / lift table (e.g. 0.01 0.05)")
     args = ap.parse_args()
     if args.scores.startswith("gs://") and Path(args.key).exists():
         os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", args.key)
@@ -144,10 +148,22 @@ def main() -> int:
 
         both = 0 < y.sum() < len(y)
         if both:
-            roc = roc_auc_score(y, df["score"].to_numpy())
-            ap = average_precision_score(y, df["score"].to_numpy())
+            sc = df["score"].to_numpy()
+            roc = roc_auc_score(y, sc)
+            ap = average_precision_score(y, sc)
             print(f"  forward-label eval (default within {args.horizon}mo of {cutoff.date()}): "
                   f"n={len(y):,}  ROC={roc:.4f}  AP={ap:.4f}")
+            # recall@K / lift — "review the top K% riskiest, catch what share of defaults?"
+            # (the operational read: precision is low at a rare base rate; lift is the value.)
+            P, base = int(y.sum()), y.mean()
+            caught_cum = y[np.argsort(-sc)].cumsum()               # defaults caught, ranked by score
+            print(f"  recall @ top-K (rank by score; {P} defaults, base rate {base*100:.3f}%):")
+            for k in args.top_k:
+                n = max(int(len(y) * k), 1)
+                caught = int(caught_cum[n - 1])
+                print(f"    top {k*100:>4.1f}% ({n:>8,} loans): caught {caught:>4}/{P} = "
+                      f"{caught/P*100:4.1f}% recall | precision {caught/n*100:5.2f}% | "
+                      f"lift {(caught/n)/base:4.1f}x")
             if args.min_roc is not None:
                 chk(f"H: ROC-AUC >= {args.min_roc}", roc >= args.min_roc, f"ROC={roc:.4f}")
         else:

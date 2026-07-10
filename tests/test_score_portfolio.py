@@ -217,6 +217,7 @@ def test_validate_scores_quality_eval_runs(tmp_path):
     assert v.returncode == 0, v.stdout + v.stderr
     assert "forward-label eval" in v.stdout and "ROC=" in v.stdout
     assert "population" in v.stdout and "matched_in_scored" in v.stdout   # reconciliation shown
+    assert "recall @ top-K" in v.stdout and "lift" in v.stdout            # lift table shown
     assert "G: scored loans all exist in the labeled panel" in v.stdout
     assert "ALL CHECKS PASSED" in v.stdout
 
