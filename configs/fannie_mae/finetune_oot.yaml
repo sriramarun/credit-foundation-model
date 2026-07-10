@@ -10,10 +10,11 @@
 include: common.yaml
 
 run_name: run_2000_2022
-tokenizer: configs/fannie_mae/tokenizer_v2.json   # re-fit on the 2000-2022 train split (DL-008)
+tokenizer: configs/fannie_mae/tokenizer.json      # full-corpus (2000-2022) train-only fit (DL-008)
 
 checkpoint: ${paths.runs}/m5_full.pt
 panel: ${paths.raw}/panel_2000_2024.parquet       # full panel — forward labels need 2023-24 rows
+save: ${paths.runs}/m5_full_ft.pt                 # persist the fine-tuned model (backbone + head)
 
 task:
   train_cutoffs: ["2016-12-31", "2017-12-31", "2018-12-31", "2019-12-31", "2020-12-31", "2021-12-31"]
@@ -43,7 +44,7 @@ runtime:
   device: null             # cuda|cpu (null = auto)
   bf16: true
 
-workers: 32
-engine: cpu                # cpu | vector | gpu (RAPIDS cuDF/CuPy)
+workers: 32                # only used by the cpu engine (process pool); ignored by vector
+engine: vector             # vectorized NumPy (production; token-identical to cpu, ~10x faster)
 features_bar: 0.784        # recent-OOT XGB bar (train 2000-2022, test 2023-25, no leakage)
 report: reports/m5_oot_ft_lora.md
