@@ -16,7 +16,7 @@ locked choice (DL-NNN references below).
  processed/{train,val,test}.parquet
      │  scripts/train_tokenizer.py         fit KVT tokenizer on TRAIN only (DL-008) → M1
      ▼
- configs/<asset>/tokenizer.json            frozen vocab (440 tokens for Fannie)
+ configs/<asset>/tokenizer.json            frozen vocab (552 tokens for the mortgage reference)
      │  scripts/encode_dataset.py          ENCODE-ONCE → token-id shards (DL-014)
      ▼
  encoded/<run>/{train,val,test}/shard-*.parquet  + manifest.json
@@ -28,8 +28,8 @@ locked choice (DL-NNN references below).
  [USR] loan embedding  ──▶  MLM head (pretrain)  /  downstream head (default, prepay, …)
 ```
 
-Everything above the model is **built and tested** (M1 + M2 Brick 1). The model (Brick 2) and
-pretraining (M3) are next.
+Every stage above is **built, tested, and validated end-to-end** — pretraining has run at full
+corpus scale and the downstream out-of-time verdict is in (see §8).
 
 ## 2. Locked architectural decisions
 
@@ -61,7 +61,7 @@ anchored in time:
 - **Event branch** — per-month dynamic facts (one block per month).
 - **`t=`** discrete `loan_age` bin; **`cal=<YYYYQ#>`** absolute calendar token (the macro-regime
   signal, DL-011); numeric fields use threshold-anchored quantile bins (DL-012).
-- Vocab + bin edges fit on **train only** (DL-008). Fannie: **440 tokens**, 100% lossless roundtrip.
+- Vocab + bin edges fit on **train only** (DL-008). Mortgage reference: **552 tokens**, 100% lossless roundtrip.
 
 ## 4. Data layer (M2 Brick 1) — built
 
@@ -101,9 +101,10 @@ varlen/packed alternative (`PackedCollator`) is deferred to M3 for throughput.
 - **train** — shuffled, **dynamic** masking (fresh each batch, RoBERTa-style).
 - **val/test** — unshuffled, **deterministic** masking (fixed seed) → comparable loss across epochs.
 
-## 5. Model — hierarchical three-branch encoder (Brick 2, next)
+## 5. Model — hierarchical three-branch encoder
 
-Built and **frozen at M2** at small scale, then scaled (data only) at M3 (DL-013).
+Built and **frozen** at small scale (M2), then scaled — data and compute only, never
+architecture — for the full-corpus pretrain (DL-013).
 
 ```
  input_ids (B,L) ──embed──┐
@@ -128,7 +129,7 @@ Built and **frozen at M2** at small scale, then scaled (data only) at M3 (DL-013
 - **Hierarchy benefit**: the History encoder runs over *event vectors* (length = #months ≤ 60),
   not raw tokens (≤ ~1000) — cheaper and more faithful than a flat transformer.
 - **Size**: ~30M params (DL-004); context window **1024** (full-corpus loans approach the
-  `max_events=60` cap ≈ ~1000 tokens). Vocab is tiny (440) so the embedding table is negligible.
+  `max_events=60` cap ≈ ~1000 tokens). Vocab is tiny (552) so the embedding table is negligible.
 - **`[USR]`** is entity-agnostic: today it pools one loan; fed a multi-product stream later it
   becomes a customer embedding with no architecture change.
 
@@ -160,10 +161,11 @@ trains.
 
 | Layer | State |
 |---|---|
-| Split / baselines (G1, OOT) | ✅ done |
-| Tokenizer (M1) | ✅ done — 440 tokens, calendar + anchored bins |
+| Split / baselines (G1, OOT) | ✅ done — validated by `scripts/validate_splits.py` |
+| Tokenizer (M1) | ✅ done — 552 tokens (full-corpus fit), calendar + anchored bins |
 | Data layer (M2 Brick 1) | ✅ done — encode-once shards, dataset, MLMCollator, datamodule |
-| Hierarchical model (M2 Brick 2) | ✅ done — 25.5M @ dim384; trains on real Fannie |
+| Hierarchical model (M2 Brick 2) | ✅ done — ~26M @ dim384; architecture frozen |
 | Training loop | ✅ done — AdamW+cosine, dropout, best-val checkpointing (`train_mlm`, `pretrain.py`) |
-| Pretraining → 30M checkpoint (M3) | ⬜ **data-bound** — parallel-encode full corpus, train on ~2M loans (DL-015) |
-| Embeddings + downstream eval (E) | ⬜ the verdict: FM embeddings vs ROC 0.757 |
+| Pretraining at scale (M3/M5) | ✅ done — full 25-year corpus (4% loan sample), parallel encode |
+| Embeddings + downstream eval | ✅ done — **OOT verdict: FM full 0.8257/0.0113 beats XGB 0.7913/0.0057** (2022–23 obs → 2023–24 defaults) |
+| Multi-GPU DDP · batch scoring · calibration | ⬜ tracked follow-ups |

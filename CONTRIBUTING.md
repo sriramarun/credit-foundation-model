@@ -4,7 +4,7 @@ Thanks for your interest in the Credit Foundation Model Framework.
 
 ## Development setup
 ```bash
-pip install -e ".[dev,app]"
+pip install -e ".[dev]"
 pytest -q
 ruff check .
 ```

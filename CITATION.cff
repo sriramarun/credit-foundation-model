@@ -4,8 +4,6 @@ message: "If you use this framework, please cite it."
 type: software
 authors:
   - name: "finevals.ai"
-  - family-names: Krishnan
-    given-names: Sriram
 license: Apache-2.0
 repository-code: "https://github.com/sriramarun/credit-foundation-model"
 version: 0.1.0
