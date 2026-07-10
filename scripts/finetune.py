@@ -44,6 +44,7 @@ Config-driven (recipe: ``configs/fannie_mae/finetune.yaml``)::
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 
 import fsspec
@@ -56,6 +57,7 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 
 from credit_fm.data.collators import MLMCollator
 from credit_fm.data.encode import encode_panel_parallel
+from credit_fm.inference.scoring import apply_lora, observe_panel
 from credit_fm.models import CreditFoundationModel
 from credit_fm.tokenizer import KVTTokenizer
 from credit_fm.utils import storage
@@ -78,52 +80,12 @@ def load_checkpoint(path, key):
     return model, c
 
 
-def observe_panel(panel, id_col, time_col, cutoff, gate_col):
-    dt = pd.to_datetime(panel[time_col], errors="coerce")
-    panel = panel[dt <= pd.to_datetime(cutoff)]
-    if gate_col is not None:
-        last = panel.sort_values(time_col).groupby(id_col).tail(1)
-        keep = set(last.loc[last[gate_col].fillna(False).astype(bool), id_col])
-        panel = panel[panel[id_col].isin(keep)]
-    return panel
-
-
 def forward_default_loans(panel, id_col, time_col, label_col, cutoff, horizon_months):
     lo = pd.to_datetime(cutoff)
     hi = lo + pd.DateOffset(months=horizon_months)
     dt = pd.to_datetime(panel[time_col], errors="coerce")
     hit = panel[(dt > lo) & (dt <= hi) & panel[label_col].fillna(False).astype(bool)]
     return set(hit[id_col])
-
-
-class LoRALinear(nn.Module):
-    """Frozen base Linear + trainable low-rank update ``B @ A`` (scaled)."""
-
-    def __init__(self, base: nn.Linear, r: int, alpha: int):
-        super().__init__()
-        self.base = base
-        for p in self.base.parameters():
-            p.requires_grad = False
-        self.lora_A = nn.Parameter(torch.zeros(r, base.in_features))
-        self.lora_B = nn.Parameter(torch.zeros(base.out_features, r))
-        nn.init.normal_(self.lora_A, std=0.02)
-        self.scale = alpha / r
-
-    def forward(self, x):
-        return self.base(x) + (x @ self.lora_A.t() @ self.lora_B.t()) * self.scale
-
-
-def apply_lora(model, r, alpha):
-    # collect the target Linears FIRST, then wrap — mutating during traversal would re-wrap the
-    # base Linear inside each new LoRALinear forever (infinite recursion).
-    targets = []
-    for enc in (model.profile_encoder, model.event_encoder, model.history_encoder):
-        for mod in enc.modules():
-            for cname, child in mod.named_children():
-                if isinstance(child, nn.Linear):
-                    targets.append((mod, cname, child))
-    for mod, cname, child in targets:
-        setattr(mod, cname, LoRALinear(child, r, alpha))
 
 
 def _safe_roc(y, p):
@@ -198,7 +160,7 @@ def main() -> None:
     schema = yaml.safe_load(open(cfg.schema))
     id_col, time_col = schema["id_col"], schema["time_col"]
     tok = KVTTokenizer.load(cfg.tokenizer)
-    model, _ = load_checkpoint(cfg.checkpoint, cfg.key)
+    model, base_config = load_checkpoint(cfg.checkpoint, cfg.key)
 
     storage.ensure_auth(cfg.panel, cfg.key)
     panel = storage.read_parquet(cfg.panel)
@@ -389,6 +351,28 @@ def main() -> None:
             f"| metric | value |\n|---|--:|\n| ROC-AUC | {roc:.4f} |\n| PR-AUC | {pr:.4f} |\n"
             + bar_row)
         print(f"wrote {rep}")
+
+    # persist the fine-tuned model so it can be served (scripts/score_portfolio.py). model.state_dict()
+    # after best-epoch restore captures the deployable weights in all three modes (frozen head /
+    # LoRA adapters / full); the finetune meta records what score_portfolio needs to rebuild it.
+    save_path = cfg.get_path("save")
+    if save_path:
+        val_roc = float(best_roc) if np.isfinite(best_roc) else None
+        ft_meta = {
+            "mode": cfg.mode,
+            "lora": ({"rank": cfg.lora.rank, "alpha": cfg.lora.alpha} if cfg.mode == "lora" else None),
+            "task": {"label_col": cfg.task.label_col, "gate_col": cfg.get_path("task.gate_col"),
+                     "horizon_months": horizon, "window": str(when)},
+            "metrics": {"val_roc": val_roc, "test_roc": float(roc), "test_ap": float(pr)},
+            "base_checkpoint": cfg.checkpoint, "tokenizer": cfg.tokenizer, "schema": cfg.schema,
+            "n_test": int(len(y_te)),
+        }
+        storage.ensure_auth(save_path, cfg.key)
+        with fsspec.open(save_path, "wb") as f:
+            torch.save({"config": base_config, "model": model.state_dict(), "finetune": ft_meta}, f)
+        storage.write_text(json.dumps(ft_meta, indent=2, default=str),
+                           str(save_path).rsplit(".", 1)[0] + "_meta.json")
+        print(f"saved fine-tuned model -> {save_path}")
 
 
 if __name__ == "__main__":

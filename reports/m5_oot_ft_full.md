@@ -4,6 +4,6 @@ Test 713,835 loans (0.14% default), loan-disjoint; fit set neg_per_pos=20, pos_w
 
 | metric | value |
 |---|--:|
-| ROC-AUC | 0.8257 |
-| PR-AUC | 0.0113 |
+| ROC-AUC | 0.8230 |
+| PR-AUC | 0.0103 |
 | features bar (ROC) | 0.7840 |
