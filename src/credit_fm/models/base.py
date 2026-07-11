@@ -23,8 +23,6 @@ profile/history scaffolds still import; new code uses :class:`TransformerEncoder
 
 from __future__ import annotations
 
-import math
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -66,6 +64,15 @@ def apply_rope(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.T
 
 
 class MultiHeadSelfAttention(nn.Module):
+    """RoPE self-attention via ``scaled_dot_product_attention`` (FlashAttention-2 on H100).
+
+    SDPA computes ``softmax(QKᵀ/√d + attn_mask) · V`` **without materialising the ``(B,H,L,L)``
+    score matrix** — the O(L²) memory that OOMs long sequences under the naive path. The additive
+    float ``attn_mask`` (``(B,1,L,L)`` or ``(B,1,1,L)``, ``0`` keep / ``-inf`` mask) broadcasts over
+    heads exactly as before, so the math is identical (proven in tests) — it just fits far bigger
+    batches and runs faster. On CPU / older GPUs SDPA falls back to the math kernel automatically.
+    """
+
     def __init__(self, dim: int, n_heads: int, rope_base: float = 10_000.0, dropout: float = 0.0):
         super().__init__()
         if dim % n_heads or (dim // n_heads) % 2:
@@ -73,9 +80,9 @@ class MultiHeadSelfAttention(nn.Module):
         self.n_heads = n_heads
         self.head_dim = dim // n_heads
         self.rope_base = rope_base
+        self.dropout_p = dropout                          # applied to attn weights inside SDPA
         self.qkv = nn.Linear(dim, 3 * dim, bias=False)
         self.proj = nn.Linear(dim, dim, bias=False)
-        self.attn_drop = nn.Dropout(dropout)
         self.resid_drop = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor | None = None) -> torch.Tensor:
@@ -84,11 +91,10 @@ class MultiHeadSelfAttention(nn.Module):
         q, k, v = qkv[0], qkv[1], qkv[2]                  # (B, n_heads, L, head_dim)
         cos, sin = _rope_tables(length, self.head_dim, self.rope_base, x.device, x.dtype)
         q, k = apply_rope(q, k, cos, sin)
-        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        if attn_mask is not None:
-            scores = scores + attn_mask                   # additive (B,1,L,L), broadcast over heads
-        attn = self.attn_drop(scores.softmax(dim=-1))
-        out = torch.matmul(attn, v).transpose(1, 2).contiguous().view(bsz, length, dim)
+        out = F.scaled_dot_product_attention(            # FlashAttention-2 backend on H100
+            q, k, v, attn_mask=attn_mask,
+            dropout_p=self.dropout_p if self.training else 0.0)
+        out = out.transpose(1, 2).contiguous().view(bsz, length, dim)
         return self.resid_drop(self.proj(out))
 
 
