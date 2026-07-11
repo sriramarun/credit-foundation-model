@@ -9,6 +9,8 @@ is a masked mean (absent events → zero vector, masked out).
 
 from __future__ import annotations
 
+import math
+
 import torch
 
 from credit_fm.models.base import (
@@ -16,8 +18,10 @@ from credit_fm.models.base import (
     MultiHeadSelfAttention,
     RMSNorm,
     TransformerEncoder,
+    apply_rope,
     event_block_additive_mask,
     padding_additive_mask,
+    _rope_tables,
 )
 from credit_fm.models.event_encoder import EventEncoder
 from credit_fm.models.history_encoder import HistoryEncoder
@@ -37,6 +41,39 @@ def test_attention_shape_and_padding_mask_no_nan():
     mask = padding_additive_mask(torch.tensor([[1, 1, 1, 1, 0, 0], [1, 1, 1, 0, 0, 0]]))
     out = attn(x, mask)
     assert out.shape == x.shape and torch.isfinite(out).all()
+
+
+def _manual_attention(mod: MultiHeadSelfAttention, x, attn_mask):
+    """The pre-FlashAttention reference: explicit softmax(QKᵀ/√d + mask)·V using the module's own
+    weights + RoPE. SDPA (mod.forward) must match this to prove the swap changed nothing but speed."""
+    b, length, dim = x.shape
+    qkv = mod.qkv(x).view(b, length, 3, mod.n_heads, mod.head_dim).permute(2, 0, 3, 1, 4)
+    q, k, v = qkv[0], qkv[1], qkv[2]
+    cos, sin = _rope_tables(length, mod.head_dim, mod.rope_base, x.device, x.dtype)
+    q, k = apply_rope(q, k, cos, sin)
+    scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(mod.head_dim)
+    if attn_mask is not None:
+        scores = scores + attn_mask
+    out = torch.matmul(scores.softmax(-1), v).transpose(1, 2).contiguous().view(b, length, dim)
+    return mod.proj(out)
+
+
+def test_sdpa_attention_is_numerically_identical_to_manual():
+    """FlashAttention (SDPA) must equal the old manual attention to fp tolerance, for no mask, a
+    padding mask, and an intra-event block mask — the safety proof for the swap."""
+    torch.manual_seed(0)
+    mod = MultiHeadSelfAttention(32, n_heads=4, dropout=0.0).eval()   # eval => no dropout, comparable
+    x = torch.randn(3, 8, 32)
+    event_index = torch.tensor([[-1, 0, 0, 1, 1, 1, 2, 2],
+                                [-1, -1, 0, 0, 0, 1, 1, 1],
+                                [0, 0, 1, 1, 2, 2, 3, 3]])
+    pad = padding_additive_mask(torch.tensor([[1, 1, 1, 1, 1, 1, 0, 0],
+                                              [1, 1, 1, 1, 1, 0, 0, 0],
+                                              [1, 1, 1, 1, 1, 1, 1, 1]]))
+    for mask in (None, pad, event_block_additive_mask(event_index)):
+        got = mod(x, mask)
+        ref = _manual_attention(mod, x, mask)
+        assert torch.allclose(got, ref, atol=1e-5, rtol=1e-4), "SDPA diverged from manual attention"
 
 
 def test_encoder_forward_and_backward():

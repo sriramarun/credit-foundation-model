@@ -17,16 +17,22 @@ Config-driven (recipe: ``configs/fannie_mae/pretrain.yaml``)::
 
 from __future__ import annotations
 
-import fsspec
-import torch
+import os
 
-from credit_fm.data import CreditDataModule
-from credit_fm.models import CreditFoundationModel
-from credit_fm.tokenizer import KVTTokenizer
-from credit_fm.training import train_mlm
-from credit_fm.utils import storage
-from credit_fm.utils.config import parse_cli, summarize
-from credit_fm.utils.reproducibility import set_seed
+# reduce CUDA fragmentation for long-sequence O(L²) attention — must be set BEFORE torch inits CUDA.
+# (FlashAttention/SDPA already avoids the big score matrix; this is belt-and-suspenders for headroom.)
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+import fsspec  # noqa: E402
+import torch  # noqa: E402
+
+from credit_fm.data import CreditDataModule  # noqa: E402
+from credit_fm.models import CreditFoundationModel  # noqa: E402
+from credit_fm.tokenizer import KVTTokenizer  # noqa: E402
+from credit_fm.training import train_mlm  # noqa: E402
+from credit_fm.utils import storage  # noqa: E402
+from credit_fm.utils.config import parse_cli, summarize  # noqa: E402
+from credit_fm.utils.reproducibility import set_seed  # noqa: E402
 
 
 def main() -> None:
