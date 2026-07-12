@@ -60,10 +60,15 @@ def main() -> None:
     print(f"model: {model.num_parameters()/1e6:.1f}M params (dim={m.dim}, dropout={m.dropout})",
           flush=True)
 
+    grad_accum = int(cfg.get_path("schedule.grad_accum") or 1)
+    if grad_accum > 1:
+        print(f"grad accumulation: {grad_accum} micro-batches/step "
+              f"(effective batch {cfg.data.batch_size * grad_accum})", flush=True)
     history = train_mlm(
         model, dm, steps=cfg.schedule.steps, lr=cfg.optimizer.lr,
         weight_decay=cfg.optimizer.weight_decay, warmup=cfg.optimizer.warmup,
-        grad_clip=cfg.optimizer.grad_clip, device=cfg.runtime.device, bf16=cfg.runtime.bf16,
+        grad_clip=cfg.optimizer.grad_clip, grad_accum=grad_accum,
+        device=cfg.runtime.device, bf16=cfg.runtime.bf16,
         log_every=cfg.schedule.log_every, val_every=cfg.schedule.val_every)
 
     first, last = history["train"][0], history["train"][-1]

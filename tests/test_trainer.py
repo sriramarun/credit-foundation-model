@@ -87,3 +87,56 @@ def test_train_mlm_reduces_loss_and_logs_val(tmp_path):
     # best-val tracking: records the lowest val loss seen
     assert history["best_val"] == min(v for _, v in history["val"])
     assert history["best_step"] in {s for s, _ in history["val"]}
+
+
+class _CountingLoader:
+    """Wrap a DataLoader, counting every micro-batch yielded. Re-iterable (the trainer cycles it)."""
+
+    def __init__(self, dl, counter):
+        self._dl, self._counter = dl, counter
+
+    def __iter__(self):
+        for b in self._dl:
+            self._counter["n"] += 1
+            yield b
+
+
+def _count_micro_batches(dm, counter):
+    orig = dm.train_dataloader()                 # a real, re-iterable DataLoader (called once)
+    dm.train_dataloader = lambda: _CountingLoader(orig, counter)
+
+
+def test_grad_accum_consumes_micro_batches_and_reduces_loss(tmp_path):
+    """grad_accum=N runs N micro-batches per optimiser step (pulls N× batches) and still trains."""
+    tok = KVTTokenizer(CONFIG).fit(_panel(12))
+    train_dir = str(tmp_path / "train")
+    _write_split(tok, _panel(12), train_dir)
+
+    pulled = {"n": 0}
+    dm = CreditDataModule(train_dir, batch_size=4)
+    _count_micro_batches(dm, pulled)
+
+    model = CreditFoundationModel(tok.vocab_size, len(tok.field_types), dim=16, n_heads=2,
+                                  profile_layers=1, event_layers=1, history_layers=1)
+    history = train_mlm(model, dm, steps=30, grad_accum=3, lr=2e-3, warmup=5, device="cpu",
+                        log_every=0)
+    assert len(history["train"]) == 30                       # 30 optimiser steps
+    assert pulled["n"] == 30 * 3                             # each step consumed 3 micro-batches
+    assert np.isfinite(history["train"]).all()
+    assert np.mean(history["train"][-8:]) < np.mean(history["train"][:8])   # still learns
+
+
+def test_grad_accum_one_pulls_one_batch_per_step(tmp_path):
+    """grad_accum=1 (the default) consumes exactly one micro-batch per optimiser step."""
+    tok = KVTTokenizer(CONFIG).fit(_panel(10))
+    train_dir = str(tmp_path / "train")
+    _write_split(tok, _panel(10), train_dir)
+
+    pulled = {"n": 0}
+    dm = CreditDataModule(train_dir, batch_size=4)
+    _count_micro_batches(dm, pulled)
+
+    model = CreditFoundationModel(tok.vocab_size, len(tok.field_types), dim=16, n_heads=2,
+                                  profile_layers=1, event_layers=1, history_layers=1)
+    train_mlm(model, dm, steps=10, lr=1e-3, warmup=2, device="cpu", log_every=0)   # grad_accum default
+    assert pulled["n"] == 10                                  # one micro-batch per step

@@ -14,13 +14,52 @@ from __future__ import annotations
 
 import hashlib
 import os
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 import fsspec
 import pandas as pd
 
 GCS_DEFAULT_KEY = "/workspace/.gcloud/credit-fm-sa.json"  # service-account key on the container
+
+T = TypeVar("T")
+
+# Substrings that mark a *transient* cloud/network failure (safe to retry) rather than a real error
+# (missing object, bad schema, auth denied). Cloud object stores + OAuth token refresh occasionally
+# drop a TLS handshake or return a 5xx/429 under load — fatal to a multi-hour ingest/encode if not
+# retried, harmless with a short backoff. Matched case-insensitively against `type(exc): message`.
+_TRANSIENT_MARKERS = (
+    "ssl", "eof", "oauth2", "max retries", "connection reset", "connection aborted",
+    "connectionerror", "connectionreseterror", "transporterror", "timed out", "timeout",
+    "temporary failure", "broken pipe", "remotedisconnected", " 500", " 502", " 503", " 504",
+    " 429", "internalerror", "serviceunavailable", "badstatusline",
+)
+
+
+def _is_transient(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(m in text for m in _TRANSIENT_MARKERS)
+
+
+def retry(fn: Callable[[], T], *, tries: int = 5, base_delay: float = 2.0, what: str = "") -> T:
+    """Call ``fn`` with exponential backoff, retrying only *transient* network/cloud failures.
+
+    Non-transient errors (missing file, schema mismatch, permission denied) re-raise immediately —
+    we never mask a real bug behind retries. Delays: ``base_delay * 2**(attempt-1)`` (2,4,8,16s).
+    """
+    for attempt in range(1, tries + 1):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 — classified by _is_transient, real errors re-raise
+            if attempt >= tries or not _is_transient(exc):
+                raise
+            delay = base_delay * (2 ** (attempt - 1))
+            where = f" on {what}" if what else ""
+            print(f"  [storage] transient error{where} (attempt {attempt}/{tries}): "
+                  f"{type(exc).__name__}; retrying in {delay:.0f}s", flush=True)
+            time.sleep(delay)
+    raise RuntimeError("unreachable")  # pragma: no cover
 
 
 def ensure_auth(url: str, key: str | None = GCS_DEFAULT_KEY) -> None:
@@ -58,12 +97,15 @@ def write_parquet(df: pd.DataFrame, url: str, storage_options: dict[str, Any] | 
     Streams through the fsspec file handle rather than ``df.to_parquet(url)`` so it works even when
     this pyarrow build was compiled without native cloud-filesystem (GCS/S3) support.
     """
-    fs, path = _fs(url, storage_options)
-    parent = path.rsplit("/", 1)[0]
-    if parent and parent != path:
-        fs.makedirs(parent, exist_ok=True)
-    with fs.open(path, "wb") as f:
-        df.to_parquet(f, index=False)
+    def _write() -> None:
+        fs, path = _fs(url, storage_options)
+        parent = path.rsplit("/", 1)[0]
+        if parent and parent != path:
+            fs.makedirs(parent, exist_ok=True)
+        with fs.open(path, "wb") as f:                       # 'wb' truncates → a retry restarts clean
+            df.to_parquet(f, index=False)
+
+    retry(_write, what=url)
 
 
 def read_parquet(url: str, columns=None, storage_options: dict[str, Any] | None = None) -> pd.DataFrame:
@@ -76,9 +118,13 @@ def read_parquet(url: str, columns=None, storage_options: dict[str, Any] | None 
         return pd.read_parquet(url, columns=columns)        # local: plain path, fastest
     import pyarrow.dataset as pds
     from pyarrow.fs import FSSpecHandler, PyFileSystem
-    fs, path = _fs(url, storage_options)
-    dataset = pds.dataset(path, filesystem=PyFileSystem(FSSpecHandler(fs)), format="parquet")
-    return dataset.to_table(columns=columns).to_pandas()
+
+    def _read() -> pd.DataFrame:                             # rebuild fs+dataset each try (fresh creds)
+        fs, path = _fs(url, storage_options)
+        dataset = pds.dataset(path, filesystem=PyFileSystem(FSSpecHandler(fs)), format="parquet")
+        return dataset.to_table(columns=columns).to_pandas()
+
+    return retry(_read, what=url)
 
 
 def write_text(text: str, url: str, storage_options: dict[str, Any] | None = None) -> None:

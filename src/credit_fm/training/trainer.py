@@ -46,16 +46,20 @@ def _evaluate(model, datamodule, device: str, use_amp: bool) -> float:
 
 def train_mlm(model, datamodule, *, steps: int = 100, lr: float = 3e-4, weight_decay: float = 0.01,
               warmup: int = 10, grad_clip: float = 1.0, min_lr_ratio: float = 0.1,
-              device: str | None = None, bf16: bool = False, log_every: int = 10,
+              grad_accum: int = 1, device: str | None = None, bf16: bool = False, log_every: int = 10,
               val_every: int = 0, restore_best: bool = True,
               log: Callable[[str], None] = print) -> dict:
     """Train ``model`` for ``steps`` optimiser steps on ``datamodule``; return a loss history.
 
-    When validating, tracks the best (lowest) val loss; if ``restore_best`` the model is rolled
-    back to that checkpoint at the end. History carries ``best_val``/``best_step``.
+    ``grad_accum`` micro-batches are summed per optimiser step, so the *effective* batch is
+    ``datamodule.batch_size * grad_accum`` while peak memory stays at one micro-batch — the lever
+    for training a large model on a single GPU without shrinking the token budget. ``grad_accum=1``
+    is the plain loop. When validating, tracks the best (lowest) val loss; if ``restore_best`` the
+    model is rolled back to that checkpoint at the end. History carries ``best_val``/``best_step``.
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = bf16 and device.startswith("cuda")
+    accum = max(int(grad_accum), 1)
     model.to(device).train()
     opt = build_optimizer(model, lr=lr, weight_decay=weight_decay)
     sched = build_scheduler(opt, warmup_steps=warmup, total_steps=steps, min_lr_ratio=min_lr_ratio)
@@ -64,17 +68,20 @@ def train_mlm(model, datamodule, *, steps: int = 100, lr: float = 3e-4, weight_d
     best_val, best_step, best_state = float("inf"), None, None
     batches = _cycle(datamodule.train_dataloader())
     for step in range(1, steps + 1):
-        batch = _to_device(next(batches), device)
-        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
-            loss = model(batch)["loss"]
         opt.zero_grad(set_to_none=True)
-        loss.backward()
+        step_loss = 0.0
+        for _ in range(accum):                        # accumulate `accum` micro-batches → one step
+            batch = _to_device(next(batches), device)
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
+                loss = model(batch)["loss"] / accum   # scale so grads are the mean over micro-batches
+            loss.backward()
+            step_loss += loss.item()
         if grad_clip:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         opt.step()
         sched.step()
 
-        history["train"].append(loss.item())
+        history["train"].append(step_loss)
         if log_every and (step % log_every == 0 or step == 1):
             log(f"step {step}/{steps}  loss {loss.item():.4f}  lr {sched.get_last_lr()[0]:.2e}")
         if val_every and datamodule.val is not None and step % val_every == 0:
