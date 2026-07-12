@@ -58,7 +58,8 @@ python scripts/profile_fannie_dataset.py \
 3. Columns *included* in training vs *excluded* / *leakage*
 4. Delinquency &amp; default rate by year
 5. Per-column statistics
-6. Notes &amp; caveats
+6. How to (re)produce this data — ingest
+7. Notes &amp; caveats
 """),
 
     # ---------------------------------------------------------------- setup
@@ -530,7 +531,38 @@ if PROFILE and PROFILE["columns"]:
 
     # ---------------------------------------------------------------- caveats
     md(r"""
-## 6. Notes &amp; caveats
+## 6. How to (re)produce this data — ingest
+
+The panel this bible documents is written by **stage 1, `ingest_fannie_mae.py`**: it reads the raw
+Hive-partitioned source, derives the modelling columns (`reporting_date`, `origination_date`,
+`default_event`, `is_performing`, …), optionally loan-samples, and writes one combined panel.
+
+```bash
+# the 10% panel used for the scaling run (a deterministic loan-hash sample)
+python scripts/ingest_fannie_mae.py -c configs/fannie_mae/ingest_2000_2024.yaml \
+    --sample_pct 10 --combined_name panel_2000_2024_10pct.parquet
+
+# the default 4% reference panel
+python scripts/ingest_fannie_mae.py -c configs/fannie_mae/ingest_2000_2024.yaml
+
+# always audit the result (re-derives the labels + checks the sample rate)
+python scripts/validate_ingest.py \
+    --panel gs://sriram-credit-fm-data/output/raw/fannie_mae/panel_2000_2024_10pct.parquet \
+    --sample-pct 10
+```
+
+`--sample_pct` sets the loan-hash sample (4% is proven representative in section 4d; a bigger sample
+just adds loans, it doesn't shift the rates). `--combined_name` names the output file so a new
+sample never overwrites the old one. Then regenerate this notebook's stats artifact with the
+`profile_fannie_dataset.py` command from the top of the notebook. Pipeline position:
+
+```
+[ INGEST ] → prepare_data (split) → train_tokenizer → encode → pretrain
+```
+"""),
+
+    md(r"""
+## 7. Notes &amp; caveats
 
 * **Sampling & representativeness.** The default profile runs on the ingested **4% panel**, a
   *deterministic hash sample on `loan_id`* — whole loan histories are kept or dropped together, so

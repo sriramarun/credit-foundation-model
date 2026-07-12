@@ -49,7 +49,8 @@ at the end.
 2. The invariants it must satisfy
 3. The produced split (from the manifest)
 4. Full parquet-level validation
-5. Notes &amp; caveats
+5. How to run it
+6. Notes &amp; caveats
 """),
 
     # ---------------------------------------------------------------- setup
@@ -223,9 +224,50 @@ logic + an end-to-end run through the validator, including a negative control th
 loan and confirms the validator **fails**).
 """),
 
+    # ---------------------------------------------------------------- how to run
+    md(r"""
+## 5. How to run it
+
+The split is one command: read the ingested panel, write `{train,val,test}.parquet` + `splits.csv`
++ `splits.meta.json` under the run directory.
+
+```bash
+# the split used for the scaling run (10% panel, capped at 2022 so pretrain is blind to the OOT era)
+python scripts/prepare_data.py -c configs/fannie_mae/prepare.yaml \
+    --input  gs://sriram-credit-fm-data/output/raw/fannie_mae/panel_2000_2024_10pct.parquet \
+    --run_name run_2000_2022_10pct \
+    --reporting_max 2022-12-31
+
+# then always audit the produced files (disjoint + complete + temporally ordered)
+python scripts/validate_splits.py \
+    --dir gs://sriram-credit-fm-data/output/processed/fannie_mae/run_2000_2022_10pct
+```
+
+Key flags (override any recipe key on the CLI):
+
+| Flag | Meaning |
+|---|---|
+| `--input` | the ingested panel to split (stage 1's output) |
+| `--run_name` | names the output dir `.../processed/fannie_mae/<run_name>/` |
+| `--reporting_max` | drop rows after this date (caps the pretrain corpus); omit for full history |
+| `--fractions` | train/val/test split, e.g. `'[0.8, 0.1, 0.1]'` (default) |
+| `--seed` | the loan-hash seed (default 42) — same seed → same split |
+
+### Where it fits
+```
+ingest → [ PREPARE_DATA / split ] → train_tokenizer → encode → pretrain
+```
+It consumes stage 1's `panel*.parquet` and produces the `train.parquet` that the tokenizer fits on
+(train only, DL-008) and that `encode` then turns into shards. To fetch the tiny `splits.meta.json`
+for this notebook, copy it locally:
+```bash
+gsutil cp gs://.../processed/fannie_mae/run_2000_2022_10pct/splits.meta.json reports/
+```
+"""),
+
     # ---------------------------------------------------------------- caveats
     md(r"""
-## 5. Notes &amp; caveats
+## 6. Notes &amp; caveats
 
 * **Whole history travels together.** Splitting is by `loan_id`, so all of a loan's monthly rows
   land in one split. Total rows are preserved (`train + val + test == panel`).
