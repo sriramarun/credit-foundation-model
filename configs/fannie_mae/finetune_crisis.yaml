@@ -28,9 +28,7 @@ save: ${paths.runs}/m_crisis_blind_ft.pt          # persist the fine-tuned crisi
 task:
   train_cutoffs: ["2000-12-31", "2001-12-31", "2002-12-31", "2003-12-31", "2004-12-31", "2005-12-31", "2006-12-31"]
   test_cutoffs: ["2008-12-31", "2009-12-31", "2010-12-31"]   # embargo year 2007 (train labels end <= 2007)
-  horizon_months: 12
-  label_col: default_event
-  gate_col: is_performing
+  label: default_12m         # declarative task from dataset.yaml labels: (v1.1 G2.1)
 
 mode: lora                 # frozen | lora | full
 lora:

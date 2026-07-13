@@ -13,10 +13,9 @@ checkpoint: ${paths.runs}/m3_full.pt
 panel: ${paths.processed}/train.parquet
 
 task:
+  label: default_12m         # declarative task from dataset.yaml labels: (v1.1 G2.1)
   cutoff: "2016-12-31"
-  horizon_months: 12
-  label_col: default_event
-  gate_col: is_performing
+
 
 mode: lora                 # frozen | lora | full
 lora:

@@ -35,17 +35,9 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.preprocessing import StandardScaler
 
+from credit_fm.data.labels import forward_event_entities, resolve_label_spec
 from credit_fm.utils import storage
 from credit_fm.utils.config import parse_cli, summarize
-
-
-def forward_default_loans(panel, id_col, time_col, label_col, cutoff, horizon_months):
-    """Loan ids that record a default in ``(cutoff, cutoff + horizon]`` — the forward label = 1 set."""
-    lo = pd.to_datetime(cutoff)
-    hi = lo + pd.DateOffset(months=horizon_months)
-    dt = pd.to_datetime(panel[time_col], errors="coerce")
-    hit = panel[(dt > lo) & (dt <= hi) & panel[label_col].fillna(False).astype(bool)]
-    return set(hit[id_col])
 
 
 def features_asof(panel, id_col, time_col, cols, cutoff):
@@ -86,7 +78,9 @@ def main() -> None:
     print(f"config: {cfg.config_path}\n"
           f"{summarize(cfg, 'embeddings', 'panel', 'task', 'split', 'xgb_device', 'report')}",
           flush=True)
-    cutoff, horizon = cfg.task.cutoff, cfg.task.horizon_months
+    cutoff = cfg.task.cutoff
+    spec = resolve_label_spec(cfg)                   # task.label from dataset.yaml (or legacy keys)
+    horizon = spec.horizon_months
 
     schema = yaml.safe_load(open(cfg.schema))
     id_col, time_col = schema["id_col"], schema["time_col"]
@@ -100,7 +94,7 @@ def main() -> None:
     print(f"embeddings: {len(emb):,} loans x {len(ecols)} dims; panel {len(panel):,} rows", flush=True)
 
     # 1) forward-default label
-    defaulted = forward_default_loans(panel, id_col, time_col, cfg.task.label_col, cutoff, horizon)
+    defaulted = forward_event_entities(panel, spec, id_col=id_col, time_col=time_col, cutoff=cutoff)
     emb["y"] = emb[id_col].isin(defaulted).astype(int)
 
     # 2) baseline feature snapshot as-of cutoff

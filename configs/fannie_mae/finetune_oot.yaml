@@ -19,9 +19,7 @@ save: ${paths.runs}/m5_full_ft.pt                 # persist the fine-tuned model
 task:
   train_cutoffs: ["2016-12-31", "2017-12-31", "2018-12-31", "2019-12-31", "2020-12-31", "2021-12-31"]
   test_cutoffs: ["2022-12-31", "2023-12-31"]
-  horizon_months: 12
-  label_col: default_event
-  gate_col: is_performing
+  label: default_12m         # declarative task from dataset.yaml labels: (v1.1 G2.1)
 
 mode: lora                 # frozen | lora | full
 lora:
