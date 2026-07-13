@@ -4,7 +4,8 @@
 Open-source framework for training credit foundation models (`credit_fm`), with a reference
 implementation on 25 years of real-world mortgage performance data (Fannie Mae Single-Family).
 
-*Status: draft, 4 Jul 2026. Numbers are from the M5 out-of-time program.*
+*Status: draft, 13 Jul 2026. Numbers are from the M5 out-of-time program, the crisis-OOT run,
+and the E10–E12 scaling program.*
 
 ---
 
@@ -33,7 +34,17 @@ Full fine-tuning lifts ranking (ROC) by **+0.034** and average precision (the op
 0.13% default rate) by **+98%** over the baseline — a lift directly comparable to, and exceeding,
 NVIDIA's transaction-foundation-model blueprint headline (+41.76% AP on fraud).
 
-Equally important, the **deliverable is the reusable framework**, validated by this result — not a
+Two subsequent programs strengthen the result:
+
+- **Crisis out-of-time (§7.3).** A backbone pretrained only on ≤2007 data — *blind to the crisis* —
+  beats the same-window XGBoost baseline on 2008–2010 defaults (**ROC 0.7819 vs 0.757, AP 0.0248
+  vs 0.024**): the sequence advantage survives the hardest regime shift in the data.
+- **Scaling program (§7.4).** Scaling data and model together (10% corpus, 100M parameters) lifts
+  the OOT result to **ROC 0.8468 / AP 0.0175** — **+0.063 ROC and 3.1× AP over the baseline** —
+  with a controlled attribution study showing data is the dominant lever and capacity a
+  consistent secondary gain.
+
+Equally important, the **deliverable is the reusable framework**, validated by these results — not a
 single tuned score.
 
 ---
@@ -181,6 +192,58 @@ where full slightly trailed LoRA).
 The generalisation story is visible in the numbers: the same models score much higher on in-era
 held-out data (monitoring ROC ~0.836) than on the true future (frozen 0.731), quantifying the
 out-of-time drop that all credit models suffer — the FM simply lands higher after it.
+
+### 7.3 Crisis out-of-time (train ≤2006 → test 2008–2010) — the regime-shift stress test
+
+The hardest test in 25 years of data: predict the 2008–2010 default wave from a model that has
+never seen it. The protocol is deliberately strict — the **backbone is pretrained only on ≤2007
+reporting data** (a separate "crisis-blind" pretrain, so no hindsight leaks in through the MLM
+corpus), the head trains on Dec-2000…Dec-2006 observations (labels land ≤2007), and testing is at
+Dec-2008/2009/2010 cutoffs with the standard loan-disjoint and embargo guards.
+
+| Model (crisis window) | ROC-AUC | AP |
+|---|--:|--:|
+| XGBoost baseline (same window) | 0.757 | 0.024 |
+| **FM full fine-tune (crisis-blind backbone)** | **0.7819** | **0.0248** |
+
+The FM wins both metrics **despite two structural handicaps**: its calendar (`cal=`) tokens for
+2008–2010 were never seen in pretraining, and the ≤2007 pretraining corpus is a fraction of the
+full one. Absolute numbers are lower than §7.2 for *all* models — the crisis is genuinely harder —
+but the FM's margin survives. Together with §7.2 this gives two independent out-of-time wins in
+opposite regimes (a benign-to-benign shift and a benign-to-crisis shift).
+
+### 7.4 Scaling program — what actually moves the needle (E10–E12)
+
+Three controlled runs answer the question every foundation-model claim owes its readers: *when the
+result improves with scale, what exactly is doing the work?* All use the §7.2 protocol; the last
+two share an identical 1.78M-loan test set (0.14% base rate).
+
+| Exp | Backbone | Pretrain corpus | Fine-tune panel | ROC-AUC | AP |
+|---|---|---|---|--:|--:|
+| E8 (reference) | 25.7M | 4% (1.2B tok) | 4% | 0.8257 | 0.0113 |
+| E10 — capacity only | 66.8M | 4% (same) | 4% | 0.8223 | ≈E8 |
+| E12 — data only | 25.7M (unchanged) | 4% (same) | **10%** | 0.8406 | 0.0145 |
+| **E11 — both** | **100.9M** | **10% (3.0B tok)** | **10%** | **0.8468** | **0.0175** |
+
+Three-point story:
+
+1. **Capacity alone does nothing (E10).** A 2.6× larger model on unchanged data is flat — the
+   26M model was already data-bound.
+2. **Data alone recovers most of the gain (E12).** Holding the backbone fixed and growing only the
+   fine-tuning panel captures **+0.0149 of the +0.0211 total ROC gain (~71%)** and +0.0032 AP.
+3. **Capacity pays once the data is there (E11).** The 100M backbone adds a further **+0.0062 ROC
+   and +0.0030 AP** on top — on AP the data/capacity split is roughly 50/50, and AP is the
+   operational metric.
+
+Against the XGBoost baseline, the best model's margin is now **+0.063 ROC and 3.1× AP**
+(0.0175 vs 0.0057). The practical reading for anyone applying this framework: **feed the model
+before you grow it** — and the null result (E10) is what makes the positive results credible.
+
+Two attribution caveats, stated plainly: (a) the E11-vs-E12 increment bundles the larger backbone
+*and* the larger pretraining corpus (a 26M-pretrained-on-10% run would split them; left as future
+work); (b) with ~2,500 test positives the +0.0062 ROC increment is on the order of one standard
+error — suggestive, while the AP increment and the E12 data effect are comfortably larger.
+
 ---
 ## 8. Discussion
 
@@ -209,10 +272,15 @@ real credit data and a true future-prediction test rather than an in-period frau
   ROC win (+0.034) is ~3× that; the frozen result is below the bar (the expected floor).
 - **Single corpus.** Validated on Fannie Mae only; a Dutch-mortgage synthetic set is used for
   controlled ablation, and invoice-financing is a planned second reference.
-- **Model scale.** At 25.7M parameters the model is Chinchilla-matched to ~0.5B tokens; the 1.2B-token
-  M5 corpus can support ~65M, and the full dataset ~1B+ — untested headroom.
-- **Crisis regime untested.** The 2008–2010 stress window (the hardest test) is the natural next run;
-  the OOT protocol is already wired for it.
+- **Test-population note (§7.4).** E11/E12 are evaluated on the 10% panel's test observations
+  (1.78M loans) and E8/E10 on the 4% panel's (714k). Both are deterministic loan-hash samples of
+  the same book (the 4% is a subset of the 10% by construction), so the populations match in
+  distribution — but the rows are not literally identical across the two pairs.
+- **Scaling attribution residual.** The E11-vs-E12 increment bundles backbone size with pretraining
+  corpus size (§7.4 caveat a); the splitting run (26M pretrained on the 10% corpus) is future work.
+- **Model scale.** Tested to 100.9M parameters / 3.0B tokens (Chinchilla-matched). The full corpus
+  (~30B tokens at 100%) supports ~1B parameters — untested headroom, gated on the streaming data
+  path and multi-GPU training.
 ---
 ## 10. Reproducibility
 Every artifact stores the exact resolved config that produced it. The OOT verdict reproduces via:
@@ -228,22 +296,42 @@ python scripts/pretrain.py            -c configs/fannie_mae/pretrain.yaml --run_
     --tokenizer configs/fannie_mae/tokenizer_v2.json --data.batch_size 32 --schedule.steps 30000
 python scripts/finetune.py            -c configs/fannie_mae/finetune_oot.yaml --mode full
 python scripts/build_oot_baseline.py  --train-years 2016-2021 --test-years 2022-2023 --horizon-months 12
-Artifacts: pretrained checkpoint runs/m5_full.pt, tokenizer configs/fannie_mae/tokenizer_v2.json,
-result reports under reports/m5_oot_ft_*.md and reports/fannie_oot_2022_2023.md.
+```
 
-11. Future work
-Crisis out-of-time (train pre-2007, test 2008–2010) — the hardest regime shift; same protocol.
-Model scale-up — 65M on the current corpus, then 500M–1B with the data tap opened and
-multi-GPU (DDP) training.
-PCA-combined and multi-task adapters — the blueprint's combined recipe and PRAGMA's
-shared-backbone-plus-adapters serving story.
-Second corpus (invoice financing) to demonstrate framework generality.
-Open-source release package — model/data cards, published weights (HF/LFS), notebooks 01–05.
-Appendix — key configuration
-Params 25.7M · dim 384 · heads 8 · layers 3/5/6 (profile/event/history) · RoPE/RMSNorm/SwiGLU
-Vocab 552 (KVT v2) · max 60 events/loan · calendar=yearquarter · numeric anchors at LTV 80/90/95/97, DTI 36/43/45
-Pretrain: 30k steps · batch 32 · AdamW lr 3e-4 cosine · warmup 1000 · dropout 0.1 · bf16 · best-val restore
-Fine-tune: frozen/LoRA(r8,α16)/full · neg_per_pos 20 · pos_weight cap 100 · 3 epochs · best-epoch restore
-Data: Fannie Mae 2000–2024 · 4% loan sample · 2.26M loans · pretrain capped Dec-2022
-EOF
-echo "wrote docs/technical_report.md ($(wc -l < docs/technical_report.md) lines)"
+The crisis run reproduces via `scripts/run_crisis_oot.sh`; the scaling run (10% ingest → 100M
+pretrain → OOT fine-tune, resume-safe) via `scripts/run_scale_100m.sh`.
+
+Artifacts: pretrained checkpoints `runs/m5_full.pt` (25.7M) and `runs/m_100m.pt` /
+`runs/m_100m_ft.pt` (100.9M); tokenizer `configs/fannie_mae/tokenizer.json`; result reports under
+`reports/m5_oot_ft_*.md`, `reports/fannie_oot_2022_2023.md`, `reports/m_100m_oot_ft_full.md`, and
+`reports/m5_on_10pct_ablation.md`.
+
+---
+## 11. Future work
+
+- **Attribution completion** — 26M pretrained on the 10% corpus, splitting backbone size from
+  pretraining-corpus size in the E11 increment (§7.4 caveat a).
+- **Model scale-up** — the 100% corpus (~30B tokens) supports ~1B parameters; gated on the
+  streaming data path and multi-GPU (DDP) training.
+- **Multi-objective pretraining (v1.1)** — auxiliary next-period heads (delinquency transition,
+  prepay) targeting the rare-event AP metric.
+- **PCA-combined and multi-task adapters** — the blueprint's combined recipe and PRAGMA's
+  shared-backbone-plus-adapters serving story.
+- **Second corpus (invoice financing)** to demonstrate framework generality; **prepayment task**
+  already runs as pure configuration (`finetune_prepay_oot.yaml`) via the declarative label layer.
+- **Open-source release package** — model/data cards, published weights (HF/LFS), notebooks 00–05.
+
+---
+## Appendix — key configuration
+
+- **Reference model (M5):** 25.7M params · dim 384 · heads 8 · layers 3/5/6 (profile/event/history)
+  · RoPE/RMSNorm/SwiGLU. Pretrain: 30k steps · batch 32 · AdamW lr 3e-4 cosine · warmup 1000 ·
+  dropout 0.1 · bf16 · best-val restore.
+- **Scaled model (E11):** 100.9M params · dim 768 · heads 8 · same layers. Pretrain: 20k steps ·
+  micro-batch 64 × grad-accum 4 (effective 256) · ~2.5B tokens · FlashAttention (SDPA) · single H100.
+- **Tokenizer:** vocab 552 (KVT) · max 60 events/loan · calendar=yearquarter · numeric anchors at
+  LTV 80/90/95/97, DTI 36/43/45 · bins/categories fit on train only.
+- **Fine-tune:** frozen/LoRA(r8,α16)/full · neg_per_pos 20 · pos_weight cap 100 · 3 epochs ·
+  best-epoch restore · loan-disjoint OOT with embargo.
+- **Data:** Fannie Mae 2000–2024 · 4% sample (2.26M loans, 1.2B tokens) and 10% sample (5.66M
+  loans, 3.0B tokens) · pretrain capped Dec-2022 (Dec-2007 for the crisis run).
