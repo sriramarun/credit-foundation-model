@@ -71,11 +71,13 @@ assert (ROOT / "configs" / "fannie_mae").exists(), "run inside the credit-founda
 def load_yaml(name):
     return yaml.safe_load((ROOT / "configs" / "fannie_mae" / name).read_text())
 
-CLASSIFY = load_yaml("classify.yaml")     # the recipe (input = train split, id/time cols)
+CLASSIFY = load_yaml("classify.yaml")     # the recipe (input = train split, id/time cols, dataset:)
 SCHEMA = load_yaml("tokenizer.yaml")      # the OUTPUT field schema this stage feeds
-BASE = load_yaml("baseline.yaml")         # leakage / exclude lists (context)
+DATASET = load_yaml("dataset.yaml")       # the DATASET CONTRACT — leakage/exclude enforced from here
 print("classify recipe input:", CLASSIFY.get("input"))
 print("id_col / time_col     :", CLASSIFY.get("id_col"), "/", CLASSIFY.get("time_col"))
+print("contract              :", CLASSIFY.get("dataset"),
+      f"({len(DATASET.get('leakage', []))} leakage + {len(DATASET.get('exclude', []))} exclude cols)")
 """),
 
     # ---------------------------------------------------------------- what it does
@@ -83,8 +85,12 @@ print("id_col / time_col     :", CLASSIFY.get("id_col"), "/", CLASSIFY.get("time
 ## 1. What this stage does
 
 `classify_schema.py` is **data-driven and reproducible** — re-running it on the same train split
-regenerates the same schema. Five steps:
+regenerates the same schema. Steps:
 
+0. **Enforce the dataset contract first** — drop every `leakage:` + `exclude:` column named in
+   `dataset.yaml` **before any analysis** (v1.1). An outcome-encoding column like
+   `current_loan_delinquency_status` can't even become a *candidate* feature — the machine does
+   this now, so it's not a thing a human has to remember.
 1. **Classify each column's role** — `id` / `static` (constant within a loan) / `dynamic` (varies
    across a loan's monthly rows).
 2. **Classify each column's value type** — `constant` / `temporal` / `flag` / `bucket` / `numeric`
@@ -162,8 +168,9 @@ where it's safe, human-in-the-loop where judgment matters.
 
 Below is the field schema this stage feeds the tokenizer (`configs/fannie_mae/tokenizer.yaml`):
 every kept field, its branch (profile/event) and type (numeric/categorical). Note the counts — the
-tokenizer works from a **curated ~43-field** subset of the 57 no-leakage features (see the honesty
-note after the table).
+tokenizer works from a **curated ~43-field** schema built *on top of* the classifier's output (the
+leakage exclusion is now machine-enforced; the remaining curation is enumerated in the honesty note
+after the table).
 """),
     code(r"""
 def schema_rows(schema):
@@ -192,27 +199,37 @@ plt.tight_layout()
 plt.show()
 """),
     md(r"""
-### ⚠️ Honesty note — for Fannie this schema is *curated*, not auto-generated
+### ⚠️ Honesty note — leakage is machine-enforced; the rest is a *documented* review layer
 
-`classify_schema.py` is the **automated classifier**, and it is the generator of record for the
-**Dutch** validation panel. For **Fannie** the `tokenizer.yaml` above was **hand-curated** on top of
-the classifier's suggestions, for three reasons the auto-classifier doesn't handle:
+**Update (v1.1):** `classify_schema.py` now reads the dataset contract and **drops every
+`leakage:`/`exclude:` column before classifying** — verified on the real 254M-row train split
+(44 leakage + 15 exclude columns dropped; 0 reached the schema). So the security property is no
+longer "trust the curation" — it's enforced by code and covered by a test
+(`tests/test_classify_schema.py`).
 
-* **Leakage.** `classify_schema` does not read `baseline.yaml`'s leakage list, so it would happily
-  route `current_loan_delinquency_status`, `zero_balance_code`, etc. into the model. The curated
-  schema **excludes all leakage columns** — this is where "57 features, not 118" is enforced.
-* **ARM/IO fields** that are null for a fixed-rate book are dropped (no signal, just noise).
-* **Regulatory bin anchors** (LTV 80/90/95/97, DTI 36/43/45) — a tokenizer detail set deliberately.
+The Fannie `tokenizer.yaml` above is still **curated on top of** the classifier's output, but for
+reasons that are *deliberate*, not gaps — and every difference is enumerable (run
+`classify_schema --out /tmp/regen.yaml` and diff):
 
-So treat `classify_schema` as the reproducible **first-pass suggester + Dutch generator**; the Fannie
-field schema is a reviewed artifact. (A good follow-up would be to teach `classify_schema` the leakage
-list so the Fannie schema could regenerate too — tracked as a cleanup, not a blocker.)
+* **Slice-superset fields.** The curated schema is the contract for the *full published layout*, so
+  it keeps fields that are 100% null *in this particular sample* (e.g. `*_classic_fico`,
+  `upb_at_issuance`) which the classifier correctly drops as constant here. The tokenizer skips
+  absent fields gracefully, so keeping them costs nothing and future vintages populate them.
+* **Semantic role overrides.** The classifier calls `original_ltv`/`dti`/`channel` **dynamic** —
+  because in the raw data they *do* change across a loan's months (re-disclosures, NA→value). We
+  keep them as **profile** because *semantically* they're origination facts. Structure-vs-semantics
+  disagreeing is exactly the kind of judgement a human should make (and now it's a *documented* one).
+* **Regulatory bin anchors** (LTV 80/90/95/97, DTI 36/43/45), `calendar: yearquarter`, per-field
+  `bins:` — tokenizer domain knowledge no classifier should invent.
+
+So: **the leakage guarantee is automated and tested; the curation that remains is a reviewed,
+enumerable layer** — a much stronger position than "hand-curated, trust us."
 """),
     code(r"""
-# confirm no leakage column leaked into the schema
-leak = set(BASE.get("leakage", [])) | set(BASE.get("exclude", []))
-bad = [c for c in FIELDS["field"] if c in leak]
-print("leakage/exclude columns present in the field schema:", bad or "none ✓")
+# confirm no leakage column leaked into the schema — read from the CONTRACT (dataset.yaml)
+banned = set(DATASET.get("leakage", [])) | set(DATASET.get("exclude", []))
+bad = [c for c in FIELDS["field"] if c in banned]
+print("leakage/exclude columns present in the field schema:", bad or "none ✓  (enforced by classify_schema step 0)")
 """),
 
     # ---------------------------------------------------------------- how to run
@@ -225,7 +242,7 @@ Report-only (prints the classification + `safe`/`review` suggestions, writes not
 python scripts/classify_schema.py -c configs/fannie_mae/classify.yaml
 ```
 
-Generate a schema file (Dutch panel, or a Fannie first-pass to review):
+Generate a schema file (leakage/exclude enforced from the recipe's `dataset:` pointer):
 
 ```bash
 python scripts/classify_schema.py -c configs/fannie_mae/classify.yaml \
@@ -233,8 +250,9 @@ python scripts/classify_schema.py -c configs/fannie_mae/classify.yaml \
 ```
 
 It reads `${paths.processed}/train.parquet` — the **train split only**, so cardinality/redundancy
-stats never see val/test (DL-008). Its unit tests live in `tests/test_data.py`
-(`test_find_redundant_flags_duplicate_and_fd`).
+stats never see val/test (DL-008) — and the `dataset:` contract for the banned lists. Tests:
+`tests/test_classify_schema.py` (the leakage-enforcement E2E + a back-compat check) and
+`tests/test_data.py::test_find_redundant_flags_duplicate_and_fd` (the redundancy logic).
 """),
 
     # ---------------------------------------------------------------- caveats
@@ -249,9 +267,10 @@ stats never see val/test (DL-008). Its unit tests live in `tests/test_data.py`
 * **Static/dynamic drives the architecture.** The profile/event split here is exactly what the
   three-branch model consumes — profile fields feed the Profile encoder (once), event fields feed the
   Event encoder (per month).
-* **Curated ≠ hand-waved.** The Fannie schema is reviewed, but every field in it is defensible and
-  leakage-free (verified in the cell above). The next notebook (`03`) fits the KVT vocabulary on this
-  schema and shows a loan turned into tokens.
+* **Curated ≠ hand-waved.** The Fannie schema is reviewed, but the leakage-free guarantee is now
+  *enforced by code* (step 0, verified above), and the remaining curation is enumerable (diff the
+  regenerated schema against the committed one). The next notebook (`03`) fits the KVT vocabulary on
+  this schema and shows a loan turned into tokens.
 """),
 ]
 
