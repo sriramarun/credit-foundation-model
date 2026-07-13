@@ -135,3 +135,12 @@ def test_committed_finetune_configs_resolve_from_the_contract():
         assert spec.gate_col == "is_performing"
         assert "label_col" not in cfg.get("task", {})     # legacy keys fully removed
 
+
+def test_prepay_task_is_pure_config():
+    """★ G2.2 — the second task is one yaml line: label: prepay_12m (zero code)."""
+    from credit_fm.utils.config import load_config
+    cfg = load_config("configs/fannie_mae/finetune_prepay_oot.yaml")
+    spec = resolve_label_spec(cfg)
+    assert spec.name == "prepay_12m" and spec.event_col == "prepay_event"
+    assert spec.horizon_months == 12 and spec.gate_col == "is_performing"
+    assert cfg["train"]["neg_per_pos"] == 0               # prepay isn't rare — natural balance
