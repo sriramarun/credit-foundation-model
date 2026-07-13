@@ -66,10 +66,12 @@ the model would have peeked at the future. So this stage reads `train.parquet` a
     # ---------------------------------------------------------------- setup
     md("## Setup — committed configs only (no GCS, no data)"),
     code(r"""
+import json
+import sys
 from pathlib import Path
 
-import json
 import pandas as pd
+import yaml
 
 # find the repo root (walk up until we see configs/)
 ROOT = Path.cwd()
@@ -78,11 +80,9 @@ while not (ROOT / "configs" / "fannie_mae").exists() and ROOT != ROOT.parent:
 assert (ROOT / "configs" / "fannie_mae").exists(), "run inside the credit-foundation-model repo"
 
 # so `import credit_fm...` works when the notebook runs from notebooks/
-import sys
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
-import yaml
 CFG = ROOT / "configs" / "fannie_mae"
 SCHEMA = yaml.safe_load((CFG / "tokenizer.yaml").read_text())      # field schema + bins/anchors/calendar
 FIT = yaml.safe_load((CFG / "tokenizer_fit.yaml").read_text())     # the fit recipe (train path, out, QA)
@@ -274,7 +274,7 @@ display(rows)
 """),
     code(r"""
 # how many DISTINCT fields, and how many value-tokens each contributes (top 12 widest fields)
-field_tokens = [t for t in FROZEN["vocab"] if "=" in t and not t.split("=",1)[0] in ("t","cal")]
+field_tokens = [t for t in FROZEN["vocab"] if "=" in t and t.split("=", 1)[0] not in ("t", "cal")]
 per_field = Counter(t.split("=",1)[0] for t in field_tokens)
 n_fields = len(per_field)
 print(f"{n_fields} distinct fields tokenized  ->  {len(field_tokens)} field=value tokens\n")
