@@ -9,7 +9,7 @@ reviewed as plain Python. Run from anywhere::
 
 The notebook itself reads ``reports/fannie_dataset_profile.json`` (produced by
 ``scripts/profile_fannie_dataset.py``); glossary + include/exclude lists are derived live from
-``src/credit_fm/data/fannie_glossary.py`` and ``configs/fannie_mae/``.
+``reference_implementations/fannie_mae/fannie_glossary.py`` and ``configs/fannie_mae/``.
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ assert (ROOT / "configs" / "fannie_mae").exists(), "run inside the credit-founda
 
 # import the glossary module directly (avoids importing credit_fm/__init__, which pulls in torch)
 _gspec = importlib.util.spec_from_file_location(
-    "fannie_glossary", ROOT / "src" / "credit_fm" / "data" / "fannie_glossary.py")
+    "fannie_glossary", ROOT / "reference_implementations" / "fannie_mae" / "fannie_glossary.py")
 G = importlib.util.module_from_spec(_gspec)
 _gspec.loader.exec_module(G)
 

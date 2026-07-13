@@ -59,6 +59,7 @@ cook many times."
     # ---------------------------------------------------------------- setup
     md("## Setup — committed configs only (no GCS, no data)"),
     code(r"""
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -71,7 +72,6 @@ while not (ROOT / "configs" / "fannie_mae").exists() and ROOT != ROOT.parent:
 assert (ROOT / "configs" / "fannie_mae").exists(), "run inside the credit-foundation-model repo"
 
 # so `import credit_fm...` works when the notebook runs from notebooks/
-import sys
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
