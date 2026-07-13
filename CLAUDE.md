@@ -91,9 +91,12 @@ tests/ unit + artifact-validator tests
 - **Two-layer validation per stage:** unit tests (logic, synthetic) + an artifact validator
   that re-derives the produced output (`scripts/validate_*.py`); validators must FAIL on
   corrupted input (negative control).
-- **Schema configs:** `classify_schema.py` generates reproducibly for Dutch; the Fannie
-  `tokenizer.yaml` is **curated** on top of its suggestions (leakage exclusion, ARM/IO drops,
-  anchors) — teaching the classifier the leakage list is a tracked cleanup.
+- **Schema configs:** `classify_schema.py` enforces the dataset contract's leakage/exclude
+  lists (`configs/<asset>/dataset.yaml`) BEFORE classification (v1.1 G1.3, verified on the real
+  254M-row split). The Fannie `tokenizer.yaml` keeps a **documented** review layer on top:
+  slice-superset fields, semantic role overrides (`original_ltv`/`dti` are structurally dynamic
+  in the raw data), and the human-set bins/anchors. Tasks are declarative too (v1.1 G2.1):
+  `dataset.yaml labels:` + `task.label` in finetune recipes.
 - **Notebooks are generated** — edit `notebooks/build_*.py`, rerun it; never hand-edit `.ipynb`.
 
 ## Dev workflow (IMPORTANT)

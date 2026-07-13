@@ -57,6 +57,7 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 
 from credit_fm.data.collators import MLMCollator
 from credit_fm.data.encode import encode_panel_parallel
+from credit_fm.data.labels import forward_event_entities, resolve_label_spec
 from credit_fm.inference.scoring import apply_lora, observe_panel
 from credit_fm.models import CreditFoundationModel
 from credit_fm.tokenizer import KVTTokenizer
@@ -80,14 +81,6 @@ def load_checkpoint(path, key):
     return model, c
 
 
-def forward_default_loans(panel, id_col, time_col, label_col, cutoff, horizon_months):
-    lo = pd.to_datetime(cutoff)
-    hi = lo + pd.DateOffset(months=horizon_months)
-    dt = pd.to_datetime(panel[time_col], errors="coerce")
-    hit = panel[(dt > lo) & (dt <= hi) & panel[label_col].fillna(False).astype(bool)]
-    return set(hit[id_col])
-
-
 def _safe_roc(y, p):
     return roc_auc_score(y, p) if 0 < y.sum() < len(y) else float("nan")
 
@@ -102,10 +95,10 @@ def build_samples(shard, defaulted, id_col):
     return samples, np.array(ys, dtype=np.int64)
 
 
-def cutoff_samples(tok, cfg, panel, id_col, time_col, cutoff, horizon):
-    """Observation samples + forward labels + loan ids for one cutoff."""
-    defaulted = forward_default_loans(panel, id_col, time_col, cfg.task.label_col, cutoff, horizon)
-    obs = observe_panel(panel, id_col, time_col, cutoff, cfg.task.gate_col)
+def cutoff_samples(tok, cfg, spec, panel, id_col, time_col, cutoff):
+    """Observation samples + forward labels + loan ids for one cutoff (label = the LabelSpec)."""
+    defaulted = forward_event_entities(panel, spec, id_col=id_col, time_col=time_col, cutoff=cutoff)
+    obs = observe_panel(panel, id_col, time_col, cutoff, spec.gate_col, spec.gate_values)
     if cfg.get_path("limit"):
         keep = obs[id_col].drop_duplicates().head(cfg.limit)
         obs = obs[obs[id_col].isin(keep)]
@@ -155,7 +148,12 @@ def main() -> None:
     use_amp = cfg.get_path("runtime.bf16", False) and device.startswith("cuda")
     epochs, bsz = cfg.train.epochs, cfg.train.batch_size
     lr = cfg.train.lr or {"frozen": 1e-3, "lora": 5e-4, "full": 2e-5}[cfg.mode]
-    cutoff, horizon = cfg.get_path("task.cutoff"), cfg.task.horizon_months
+    cutoff = cfg.get_path("task.cutoff")
+    spec = resolve_label_spec(cfg)                       # task.label from dataset.yaml (or legacy keys)
+    horizon = spec.horizon_months
+    print(f"task: {spec.name} — {spec.event_col}"
+          + (f"=={spec.event_value!r}" if spec.event_value is not True else "")
+          + f" within {horizon}mo, gate {spec.gate_col or 'none'}", flush=True)
 
     schema = yaml.safe_load(open(cfg.schema))
     id_col, time_col = schema["id_col"], schema["time_col"]
@@ -174,14 +172,14 @@ def main() -> None:
         when = f"{train_cutoffs[0]}..{train_cutoffs[-1]} -> {', '.join(test_cutoffs)}"
         pool, y_parts, loan_parts = [], [], []
         for co in train_cutoffs:
-            s, yy, lids = cutoff_samples(tok, cfg, panel, id_col, time_col, co, horizon)
+            s, yy, lids = cutoff_samples(tok, cfg, spec, panel, id_col, time_col, co)
             pool += s
             y_parts.append(yy)
             loan_parts.append(lids)
             print(f"  train cutoff {co}: {len(s):,} obs, {yy.mean()*100:.2f}% default", flush=True)
         te_samples, yte_parts, te_loan_parts = [], [], []
         for co in test_cutoffs:
-            s, yy, lids = cutoff_samples(tok, cfg, panel, id_col, time_col, co, horizon)
+            s, yy, lids = cutoff_samples(tok, cfg, spec, panel, id_col, time_col, co)
             te_samples += s
             yte_parts.append(yy)
             te_loan_parts.append(lids)
@@ -210,7 +208,7 @@ def main() -> None:
     else:
         # ---- single-cutoff loan-holdout ----
         when = cutoff
-        samples, y, _ = cutoff_samples(tok, cfg, panel, id_col, time_col, cutoff, horizon)
+        samples, y, _ = cutoff_samples(tok, cfg, spec, panel, id_col, time_col, cutoff)
         print(f"loans {len(y):,} | default rate {y.mean()*100:.2f}% | mode={cfg.mode} lr={lr}",
               flush=True)
         is_test = rng.random(len(samples)) < cfg.split.test_frac
@@ -361,7 +359,9 @@ def main() -> None:
         ft_meta = {
             "mode": cfg.mode,
             "lora": ({"rank": cfg.lora.rank, "alpha": cfg.lora.alpha} if cfg.mode == "lora" else None),
-            "task": {"label_col": cfg.task.label_col, "gate_col": cfg.get_path("task.gate_col"),
+            "task": {"label": spec.name, "label_col": spec.event_col,
+                     "event_value": spec.event_value, "gate_col": spec.gate_col,
+                     "gate_values": list(spec.gate_values),
                      "horizon_months": horizon, "window": str(when)},
             "metrics": {"val_roc": val_roc, "test_roc": float(roc), "test_ap": float(pr)},
             "base_checkpoint": cfg.checkpoint, "tokenizer": cfg.tokenizer, "schema": cfg.schema,

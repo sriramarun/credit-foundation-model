@@ -60,13 +60,24 @@ def apply_lora(model, r: int, alpha: int) -> None:
         setattr(mod, cname, LoRALinear(child, r, alpha))
 
 
-def observe_panel(panel: pd.DataFrame, id_col: str, time_col: str, cutoff, gate_col=None):
-    """Truncate to history ``<= cutoff`` and (optionally) keep only loans performing at the cutoff."""
+def observe_panel(panel: pd.DataFrame, id_col: str, time_col: str, cutoff, gate_col=None,
+                  gate_values=(True,)):
+    """Truncate to history ``<= cutoff`` and (optionally) keep only gated-in loans at the cutoff.
+
+    ``gate_values`` generalizes the gate beyond booleans (v1.1 G2.1): a loan is kept when its
+    LAST row at/before the cutoff has ``gate_col`` in ``gate_values``. The default ``(True,)``
+    reproduces the legacy boolean behavior exactly (NA gates → dropped); the Dutch panel gates on
+    ``arrears_bucket in ["Performing", "1-29 DPD", ...]``.
+    """
     dt = pd.to_datetime(panel[time_col], errors="coerce")
     panel = panel[dt <= pd.to_datetime(cutoff)]
     if gate_col is not None:
         last = panel.sort_values(time_col).groupby(id_col).tail(1)
-        keep = set(last.loc[last[gate_col].fillna(False).astype(bool), id_col])
+        if tuple(gate_values) == (True,):                 # legacy boolean fast-path (NA -> False)
+            gated = last[gate_col].fillna(False).astype(bool)
+        else:
+            gated = last[gate_col].isin(list(gate_values))
+        keep = set(last.loc[gated, id_col])
         panel = panel[panel[id_col].isin(keep)]
     return panel
 
