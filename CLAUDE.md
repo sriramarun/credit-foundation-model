@@ -39,7 +39,7 @@ train_tokenizer · encode_dataset · pretrain · extract_embeddings · evaluate_
 finetune · train_baseline · build_oot_baseline · publish_model · profile/compare ·
 validate_ingest/validate_splits (artifact auditors) · setup_container.sh
 configs/ fannie_mae/ (reference) · dutch_mortgages/ (validation) — common.yaml + stage recipes
-notebooks/ 00_data_bible · 01_data_splits · 02_schema_classification (+ build_*.py generators —
+notebooks/ 00_data_bible · 01_data_splits · 02_schema_classification · 03_tokenizer_training · 04_encode · 05_new_dataset (+ build_*.py generators —
 edit the builder, never the .ipynb)
 reference_implementations/ fannie_mae/ · dutch_mortgages/ (runbook READMEs)
 models/ packaged checkpoints · reports/ canonical run reports
