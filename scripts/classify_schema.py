@@ -3,6 +3,9 @@
 """Classify the panel's columns and generate a tokenizer config — reproducibly.
 
 Pipeline (all data-driven, so re-running regenerates the same file):
+  0. drop the dataset contract's ``leakage:`` + ``exclude:`` columns FIRST (from the recipe's
+     ``dataset:`` pointer, see ``configs/<asset>/dataset.yaml``) — outcome-encoding columns can
+     never even be *candidates* for the feature schema (v1.1 G1.3).
   1. classify each column: role (id/static/dynamic) + value type.
   2. drop ``constant`` columns (no signal).
   3. drop ``safe`` redundancies auto-detected from the data (exact dups + numeric ``*_bucket``).
@@ -22,6 +25,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from credit_fm.data.dataset_config import load_dataset_config
 from credit_fm.data.schema import classify_fields, find_redundant
 from credit_fm.utils import storage
 from credit_fm.utils.config import parse_cli, summarize
@@ -33,7 +37,7 @@ TYPE_GROUP = {"numeric": "numeric", "categorical": "categorical",
 def main() -> None:
     cfg = parse_cli(__doc__, default_config="configs/fannie_mae/classify.yaml")
     print(f"config: {cfg.config_path}\n"
-          f"{summarize(cfg, 'input', 'id_col', 'time_col', 'drop', 'out')}", flush=True)
+          f"{summarize(cfg, 'input', 'id_col', 'time_col', 'dataset', 'drop', 'out')}", flush=True)
 
     storage.ensure_auth(cfg.input, cfg.key)
     try:
@@ -41,6 +45,18 @@ def main() -> None:
     except FileNotFoundError:
         raise SystemExit(f"{cfg.input} not found — run scripts/prepare_data.py first "
                          "(or override --input).") from None
+
+    # step 0 — enforce the dataset contract BEFORE any analysis: leakage/exclude columns are
+    # dropped here so they can never appear as feature candidates (v1.1 G1.3).
+    ds_path = cfg.get_path("dataset")
+    ds = load_dataset_config(ds_path) if ds_path else None
+    if ds is not None:
+        leak = sorted(ds.leakage & set(df.columns))
+        excl = sorted(ds.exclude & set(df.columns))
+        df = df.drop(columns=leak + excl)
+        print(f"\nLEAKAGE dropped pre-classification ({len(leak)}, from {ds_path}): {leak}")
+        print(f"EXCLUDE dropped pre-classification ({len(excl)}): {excl}")
+
     info = classify_fields(df, id_col=cfg.id_col, time_col=cfg.time_col)
     red = find_redundant(df, info, id_col=cfg.id_col)
 
@@ -79,6 +95,12 @@ def main() -> None:
         "# Generated reproducibly by scripts/classify_schema.py — DO NOT hand-edit.",
         f"# Regenerate: {cmd}",
         f"# Vocab + numeric bins fit on {cfg.input} ONLY (decision DL-008).",
+    ]
+    if ds is not None:
+        lines.append(f"# Leakage/exclude enforced from {ds_path} "
+                     f"({len(ds.leakage)} leakage + {len(ds.exclude)} exclude columns "
+                     "dropped before classification).")
+    lines += [
         "schema: esma_annex2",
         f"id_col: {cfg.id_col}",
         f"time_col: {cfg.time_col}",
