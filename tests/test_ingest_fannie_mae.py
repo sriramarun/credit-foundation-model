@@ -17,7 +17,8 @@ import pytest
 
 # load the script as a module (scripts/ is not a package)
 _spec = importlib.util.spec_from_file_location(
-    "ingest_fannie_mae", Path(__file__).resolve().parent.parent / "scripts" / "ingest_fannie_mae.py")
+    "fannie_adapter",
+    Path(__file__).resolve().parent.parent / "reference_implementations" / "fannie_mae" / "adapter.py")
 ing = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ing)
 
@@ -119,32 +120,52 @@ def test_hive_path_rejects_bad_format():
         ing._hive_path("gs://b/root", "2016-Q1")
 
 
-class _Cfg(dict):
-    def get_path(self, dotted, default=None):
-        cur = self
-        for p in dotted.split("."):
-            if not isinstance(cur, dict) or p not in cur:
-                return default
-            cur = cur[p]
-        return cur
+def _adapter(stage: dict):
+    """Build a FannieMaeAdapter with a stub DatasetConfig (source resolution needs no contract)."""
+    from credit_fm.data.dataset_config import DatasetConfig
+    cfg = DatasetConfig(name="fannie_mae", adapter="fannie_mae", id_col="loan_id",
+                        time_col="reporting_date", origination_col="origination_date",
+                        origination_derived=False)
+    return ing.FannieMaeAdapter(cfg, stage=stage)
 
 
-def test_resolve_sources_files_take_precedence():
-    cfg = _Cfg(sources={"files": ["gs://x/a.parquet"], "root": "gs://x/root",
-                        "reporting": ["2016Q1"]})
-    assert ing._resolve_sources(cfg) == ["gs://x/a.parquet"]
+def test_adapter_sources_files_take_precedence():
+    ad = _adapter({"sources": {"files": ["gs://x/a.parquet"], "root": "gs://x/root",
+                               "reporting": ["2016Q1"]}})
+    assert ad.sources() == ["gs://x/a.parquet"]
 
 
-def test_resolve_sources_builds_hive_paths():
-    cfg = _Cfg(sources={"files": None, "root": "gs://x/root", "reporting": ["2016Q1", "2016Q2"]})
-    assert ing._resolve_sources(cfg) == [
+def test_adapter_sources_builds_hive_paths():
+    ad = _adapter({"sources": {"files": None, "root": "gs://x/root",
+                               "reporting": ["2016Q1", "2016Q2"]}})
+    assert ad.sources() == [
         "gs://x/root/reporting_year=2016/reporting_quarter=Q1",
         "gs://x/root/reporting_year=2016/reporting_quarter=Q2"]
 
 
-def test_resolve_sources_errors_without_inputs():
+def test_adapter_sources_errors_without_inputs():
     with pytest.raises(SystemExit, match="sources.files OR"):
-        ing._resolve_sources(_Cfg(sources={"files": None, "root": None, "reporting": None}))
+        _adapter({"sources": {"files": None, "root": None, "reporting": None}}).sources()
+
+
+def test_adapter_load_panel_end_to_end_local(tmp_path):
+    """FannieMaeAdapter on local parquet sources: derives, samples, concatenates — no GCS."""
+    raw = pd.DataFrame({
+        "loan_identifier": [f"10{i}" for i in range(20)],
+        "monthly_reporting_period": ["012016"] * 20,
+        "origination_date": ["062015"] * 20,
+        "current_loan_delinquency_status": ["0"] * 19 + ["6"],
+        "zero_balance_code": [""] * 20,
+    })
+    src = tmp_path / "part.parquet"
+    raw.to_parquet(src, index=False)
+    ad = _adapter({"sources": {"files": [str(src)]}, "sample_pct": 100, "workers": 1})
+    panel = ad.load_panel()
+    assert len(panel) == 20 and panel["loan_id"].nunique() == 20
+    assert panel["reporting_date"].iloc[0] == "2016-01-31"          # MMYYYY -> ISO month-end
+    assert panel["default_event"].sum() == 1                        # the one D180 row
+    assert bool(panel["is_performing"].iloc[0]) is True
+    assert ad.sources() == [str(src)]
 
 
 # ------------------------------------------------------------------ sampling determinism

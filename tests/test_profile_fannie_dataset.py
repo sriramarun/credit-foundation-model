@@ -30,7 +30,7 @@ def _load(path: str, name: str):
     return mod
 
 
-G = _load("src/credit_fm/data/fannie_glossary.py", "fannie_glossary")
+G = _load("reference_implementations/fannie_mae/fannie_glossary.py", "fannie_glossary")
 CMP = _load("scripts/compare_profiles.py", "compare_profiles")
 
 
