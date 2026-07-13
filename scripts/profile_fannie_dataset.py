@@ -46,7 +46,8 @@ import pyarrow.dataset as ds
 def _load_ingest():
     """Import the ingest module lazily (only the raw-source path needs its _derive)."""
     spec = importlib.util.spec_from_file_location(
-        "ingest_fannie_mae", Path(__file__).resolve().parent / "ingest_fannie_mae.py")
+        "fannie_adapter", Path(__file__).resolve().parent.parent
+        / "reference_implementations" / "fannie_mae" / "adapter.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

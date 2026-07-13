@@ -28,7 +28,8 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 _spec = importlib.util.spec_from_file_location(
-    "ingest_fannie_mae", Path(__file__).resolve().parent / "ingest_fannie_mae.py")
+    "fannie_adapter", Path(__file__).resolve().parent.parent
+    / "reference_implementations" / "fannie_mae" / "adapter.py")
 ing = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ing)
 
