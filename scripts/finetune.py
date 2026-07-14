@@ -176,14 +176,14 @@ def main() -> None:
             pool += s
             y_parts.append(yy)
             loan_parts.append(lids)
-            print(f"  train cutoff {co}: {len(s):,} obs, {yy.mean()*100:.2f}% default", flush=True)
+            print(f"  train cutoff {co}: {len(s):,} obs, {yy.mean()*100:.2f}% positive", flush=True)
         te_samples, yte_parts, te_loan_parts = [], [], []
         for co in test_cutoffs:
             s, yy, lids = cutoff_samples(tok, cfg, spec, panel, id_col, time_col, co)
             te_samples += s
             yte_parts.append(yy)
             te_loan_parts.append(lids)
-            print(f"  test cutoff {co}: {len(s):,} obs, {yy.mean()*100:.2f}% default", flush=True)
+            print(f"  test cutoff {co}: {len(s):,} obs, {yy.mean()*100:.2f}% positive", flush=True)
         y_pool = np.concatenate(y_parts)
         y_te = np.concatenate(yte_parts)
         tr_loans = np.concatenate(loan_parts)
@@ -209,7 +209,7 @@ def main() -> None:
         # ---- single-cutoff loan-holdout ----
         when = cutoff
         samples, y, _ = cutoff_samples(tok, cfg, spec, panel, id_col, time_col, cutoff)
-        print(f"loans {len(y):,} | default rate {y.mean()*100:.2f}% | mode={cfg.mode} lr={lr}",
+        print(f"loans {len(y):,} | positive rate {y.mean()*100:.2f}% | mode={cfg.mode} lr={lr}",
               flush=True)
         is_test = rng.random(len(samples)) < cfg.split.test_frac
         te_idx = np.flatnonzero(is_test)
@@ -333,8 +333,8 @@ def main() -> None:
     pr = average_precision_score(y_te, probs)
     bar = cfg.get_path("features_bar")
     bar_txt = f"   (features bar {bar:.4f})" if bar else ""
-    print(f"\n=== Fine-tune ({cfg.mode}) — default within {horizon}mo of {when} ===")
-    print(f"  test: {len(y_te):,} loans, {y_te.mean()*100:.2f}% default")
+    print(f"\n=== Fine-tune ({cfg.mode}) — {spec.name}: {spec.event_col} within {horizon}mo of {when} ===")
+    print(f"  test: {len(y_te):,} loans, {y_te.mean()*100:.2f}% positive")
     print(f"  ROC-AUC {roc:.4f} | PR-AUC {pr:.4f}{bar_txt}")
 
     if cfg.get_path("report"):
@@ -342,8 +342,8 @@ def main() -> None:
         rep.parent.mkdir(parents=True, exist_ok=True)
         bar_row = f"| features bar (ROC) | {bar:.4f} |\n" if bar else ""
         rep.write_text(
-            f"# FM fine-tune ({cfg.mode}) — default within {horizon}mo of {when}\n\n"
-            f"Test {len(y_te):,} loans ({y_te.mean()*100:.2f}% default), loan-disjoint; "
+            f"# FM fine-tune ({cfg.mode}) — {spec.name} ({spec.event_col} within {horizon}mo) of {when}\n\n"
+            f"Test {len(y_te):,} loans ({y_te.mean()*100:.2f}% positive), loan-disjoint; "
             f"fit set neg_per_pos={cfg.get_path('train.neg_per_pos', 0) or 'all'}, "
             f"pos_weight {pos_w:.0f}.\n\n"
             f"| metric | value |\n|---|--:|\n| ROC-AUC | {roc:.4f} |\n| PR-AUC | {pr:.4f} |\n"
