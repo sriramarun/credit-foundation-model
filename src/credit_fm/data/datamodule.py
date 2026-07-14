@@ -73,6 +73,15 @@ class CreditDataModule:
         return int(vocab_size)
 
     def train_dataloader(self) -> DataLoader:
+        # Under DDP (a live process group with >1 rank) each rank streams a disjoint shard of the
+        # data via DistributedSampler; otherwise the plain shuffled loader (single-GPU path, unchanged).
+        import torch.distributed as dist
+        if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+            from torch.utils.data.distributed import DistributedSampler
+            sampler = DistributedSampler(self.train, shuffle=True)   # set_epoch driven by _cycle
+            return DataLoader(self.train, batch_size=self.batch_size, sampler=sampler,
+                              num_workers=self.num_workers, pin_memory=self.pin_memory,
+                              collate_fn=self._train_collator)
         return DataLoader(self.train, batch_size=self.batch_size, shuffle=True,
                           num_workers=self.num_workers, pin_memory=self.pin_memory,
                           collate_fn=self._train_collator)
