@@ -13,6 +13,7 @@ backends are deferred to M3.
 
 from __future__ import annotations
 
+import contextlib
 import random
 import re
 from collections.abc import Callable, Iterator
@@ -21,12 +22,19 @@ import fsspec
 import numpy as np
 import torch
 
+from .distributed import DistInfo, barrier
 from .optimizers import build_optimizer, build_scheduler
 
 
 def _cycle(loader) -> Iterator:
+    """Infinite pass over ``loader``; reshuffles a ``DistributedSampler`` each epoch (no-op else)."""
+    epoch = 0
+    sampler = getattr(loader, "sampler", None)
     while True:
+        if sampler is not None and hasattr(sampler, "set_epoch"):
+            sampler.set_epoch(epoch)
         yield from loader
+        epoch += 1
 
 
 # --------------------------------------------------------------- step checkpoints (v1.1 G4a)
@@ -116,6 +124,7 @@ def train_mlm(model, datamodule, *, steps: int = 100, lr: float = 3e-4, weight_d
               val_every: int = 0, restore_best: bool = True,
               checkpoint_every: int = 0, checkpoint_keep: int = 2,
               checkpoint_out: str | None = None, resume=None,
+              dist_info: DistInfo | None = None, ddp_find_unused: bool = True,
               log: Callable[[str], None] = print) -> dict:
     """Train ``model`` for ``steps`` optimiser steps on ``datamodule``; return a loss history.
 
@@ -134,12 +143,33 @@ def train_mlm(model, datamodule, *, steps: int = 100, lr: float = 3e-4, weight_d
     One documented approximation: the shuffled dataloader stream restarts on resume (its position
     is not checkpointable) — which batches follow differs from an uninterrupted run, statistically
     neutral for MLM pretraining over a cycled corpus.
+
+    **Multi-GPU (v1.1 G4b).** Pass ``dist_info`` from :func:`~credit_fm.training.distributed.
+    init_distributed`; when it reports ``world_size > 1`` the model is wrapped in
+    ``DistributedDataParallel``, the train loader shards across ranks (``DistributedSampler``), and
+    validation / checkpointing / logging happen on **rank 0 only** (guarded by barriers). Gradient
+    accumulation composes: syncing is deferred to the last micro-batch (``no_sync``). The effective
+    batch is ``batch_size × grad_accum × world_size``. ``dist_info=None`` (or ``world_size == 1``)
+    is the single-GPU path, unchanged.
     """
+    info = dist_info or DistInfo()
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = bf16 and device.startswith("cuda")
     accum = max(int(grad_accum), 1)
-    model.to(device).train()
-    opt = build_optimizer(model, lr=lr, weight_decay=weight_decay)
+    log_main = log if info.is_main else (lambda *a, **k: None)   # only rank 0 speaks
+
+    raw_model = model.to(device)
+    raw_model.train()
+    if info.is_distributed:
+        from torch.nn.parallel import DistributedDataParallel as DDP
+        ddp_kwargs = {"device_ids": [info.local_rank]} if device.startswith("cuda") else {}
+        # find_unused_parameters: the MLM task drives only mlm_head — classification_head's params
+        # never get a grad during pretraining, and DDP's reducer errors on unmarked params unless
+        # told to detect them. Small per-step overhead, and it auto-adapts if heads change.
+        model = DDP(raw_model, find_unused_parameters=ddp_find_unused, **ddp_kwargs)
+    else:
+        model = raw_model
+    opt = build_optimizer(raw_model, lr=lr, weight_decay=weight_decay)
     sched = build_scheduler(opt, warmup_steps=warmup, total_steps=steps, min_lr_ratio=min_lr_ratio)
 
     history: dict = {"train": [], "val": [], "best_val": None, "best_step": None}
@@ -148,13 +178,13 @@ def train_mlm(model, datamodule, *, steps: int = 100, lr: float = 3e-4, weight_d
 
     src = _find_resume(checkpoint_out, resume)
     if resume and src is None:
-        log(f"resume: nothing to resume for {checkpoint_out} — cold start")
+        log_main(f"resume: nothing to resume for {checkpoint_out} — cold start")
     elif src:
         from credit_fm.utils import storage
         storage.ensure_auth(src)
         with fsspec.open(src, "rb") as f:
             ckpt = torch.load(f, map_location="cpu", weights_only=False)
-        model.load_state_dict(ckpt["model"])
+        raw_model.load_state_dict(ckpt["model"])
         opt.load_state_dict(ckpt["optimizer"])
         sched.load_state_dict(ckpt["scheduler"])
         history = ckpt["history"]
@@ -163,44 +193,52 @@ def train_mlm(model, datamodule, *, steps: int = 100, lr: float = 3e-4, weight_d
         _restore_rng(ckpt["rng"], device)
         start_step = ckpt["step"] + 1
         history["resumed_from"] = ckpt["step"]
-        log(f"resumed from {src} (step {ckpt['step']}; continuing at {start_step}/{steps})")
+        log_main(f"resumed from {src} (step {ckpt['step']}; continuing at {start_step}/{steps})")
 
     batches = _cycle(datamodule.train_dataloader())
     for step in range(start_step, steps + 1):
         opt.zero_grad(set_to_none=True)
         step_loss = 0.0
-        for _ in range(accum):                        # accumulate `accum` micro-batches → one step
+        for j in range(accum):                        # accumulate `accum` micro-batches → one step
             batch = _to_device(next(batches), device)
-            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
+            # DDP all-reduces grads on every backward; defer to the LAST micro-batch of the step
+            sync_ctx = (model.no_sync() if info.is_distributed and j < accum - 1
+                        else contextlib.nullcontext())
+            with sync_ctx, torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
                 loss = model(batch)["loss"] / accum   # scale so grads are the mean over micro-batches
             loss.backward()
             step_loss += loss.item()
         if grad_clip:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            torch.nn.utils.clip_grad_norm_(raw_model.parameters(), grad_clip)
         opt.step()
         sched.step()
 
         history["train"].append(step_loss)
         if log_every and (step % log_every == 0 or step == 1):
-            log(f"step {step}/{steps}  loss {loss.item():.4f}  lr {sched.get_last_lr()[0]:.2e}")
+            log_main(f"step {step}/{steps}  loss {step_loss:.4f}  lr {sched.get_last_lr()[0]:.2e}")
         if val_every and datamodule.val is not None and step % val_every == 0:
-            v = _evaluate(model, datamodule, device, use_amp)
-            history["val"].append((step, v))
-            star = ""
-            if v < best_val:
-                best_val, best_step = v, step
-                best_state = {k: t.detach().to("cpu").clone() for k, t in model.state_dict().items()}
-                star = "  *best"
-            log(f"  [val] step {step}  loss {v:.4f}{star}")
+            if info.is_main:                          # rank 0 evaluates the raw (unwrapped) model
+                v = _evaluate(raw_model, datamodule, device, use_amp)
+                history["val"].append((step, v))
+                star = ""
+                if v < best_val:
+                    best_val, best_step = v, step
+                    best_state = {k: t.detach().to("cpu").clone()
+                                  for k, t in raw_model.state_dict().items()}
+                    star = "  *best"
+                log_main(f"  [val] step {step}  loss {v:.4f}{star}")
+            barrier()                                 # other ranks wait out rank 0's eval
         if checkpoint_every and checkpoint_out and step % checkpoint_every == 0:
-            _save_step(checkpoint_out, step, model, opt, sched, history,
-                       (best_val, best_step, best_state), device, checkpoint_keep, log)
+            if info.is_main:
+                _save_step(checkpoint_out, step, raw_model, opt, sched, history,
+                           (best_val, best_step, best_state), device, checkpoint_keep, log_main)
+            barrier()
 
     if best_state is not None:
         history["best_val"], history["best_step"] = best_val, best_step
         if restore_best:
-            model.load_state_dict(best_state)
-            log(f"restored best checkpoint: val {best_val:.4f} @ step {best_step}")
+            raw_model.load_state_dict(best_state)
+            log_main(f"restored best checkpoint: val {best_val:.4f} @ step {best_step}")
     return history
 
 
