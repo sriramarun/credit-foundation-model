@@ -13,8 +13,12 @@ backends are deferred to M3.
 
 from __future__ import annotations
 
+import random
+import re
 from collections.abc import Callable, Iterator
 
+import fsspec
+import numpy as np
 import torch
 
 from .optimizers import build_optimizer, build_scheduler
@@ -23,6 +27,68 @@ from .optimizers import build_optimizer, build_scheduler
 def _cycle(loader) -> Iterator:
     while True:
         yield from loader
+
+
+# --------------------------------------------------------------- step checkpoints (v1.1 G4a)
+def _rng_states(device: str) -> dict:
+    state = {"python": random.getstate(), "numpy": np.random.get_state(),
+             "torch": torch.get_rng_state()}
+    if device.startswith("cuda") and torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def _restore_rng(state: dict, device: str) -> None:
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"])
+    if "cuda" in state and device.startswith("cuda") and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(state["cuda"])
+
+
+def _step_path(out: str, step: int) -> str:
+    return f"{out}.step{step:06d}.pt"
+
+
+def _save_step(out: str, step: int, model, opt, sched, history, best, device, keep, log) -> None:
+    """Write the full resumable state to ``<out>.step<N>.pt`` and rotate old step files."""
+    from credit_fm.utils import storage
+    best_val, best_step, best_state = best
+    payload = {
+        "step": step, "model": model.state_dict(), "optimizer": opt.state_dict(),
+        "scheduler": sched.state_dict(), "history": history,
+        "best_val": best_val, "best_step": best_step, "best_state": best_state,
+        "rng": _rng_states(device),
+    }
+    path = _step_path(out, step)
+    storage.ensure_auth(path)
+    with fsspec.open(path, "wb") as f:
+        torch.save(payload, f)
+    log(f"  [ckpt] step {step} -> {path}")
+    fs, base = fsspec.core.url_to_fs(out)
+    olds = sorted(fs.glob(f"{base}.step*.pt"))
+    for old in olds[:-max(keep, 1)]:
+        fs.rm(old)
+
+
+def _find_resume(out: str | None, resume) -> str | None:
+    """Resolve the resume source: an explicit path, or ``"auto"`` = newest step file for ``out``."""
+    if not resume:
+        return None
+    if resume != "auto":
+        return str(resume)
+    if not out:
+        return None
+    from credit_fm.utils import storage
+    storage.ensure_auth(out)
+    fs, base = fsspec.core.url_to_fs(out)
+    candidates = [p for p in fs.glob(f"{base}.step*.pt")
+                  if re.search(r"\.step\d+\.pt$", str(p))]
+    if not candidates:
+        return None
+    newest = max(candidates, key=lambda p: int(re.search(r"\.step(\d+)\.pt$", str(p)).group(1)))
+    proto = out.split("://")[0] + "://" if "://" in out else ""
+    return proto + str(newest) if proto and "://" not in str(newest) else str(newest)
 
 
 def _to_device(batch: dict, device: str) -> dict:
@@ -48,6 +114,8 @@ def train_mlm(model, datamodule, *, steps: int = 100, lr: float = 3e-4, weight_d
               warmup: int = 10, grad_clip: float = 1.0, min_lr_ratio: float = 0.1,
               grad_accum: int = 1, device: str | None = None, bf16: bool = False, log_every: int = 10,
               val_every: int = 0, restore_best: bool = True,
+              checkpoint_every: int = 0, checkpoint_keep: int = 2,
+              checkpoint_out: str | None = None, resume=None,
               log: Callable[[str], None] = print) -> dict:
     """Train ``model`` for ``steps`` optimiser steps on ``datamodule``; return a loss history.
 
@@ -56,6 +124,16 @@ def train_mlm(model, datamodule, *, steps: int = 100, lr: float = 3e-4, weight_d
     for training a large model on a single GPU without shrinking the token budget. ``grad_accum=1``
     is the plain loop. When validating, tracks the best (lowest) val loss; if ``restore_best`` the
     model is rolled back to that checkpoint at the end. History carries ``best_val``/``best_step``.
+
+    **Mid-run checkpoint / resume (v1.1 G4a).** With ``checkpoint_every > 0`` (and
+    ``checkpoint_out`` set), every N steps the FULL resumable state — model, optimizer, scheduler,
+    loss history, best-val tracking, and RNG states — is written to ``<out>.step<N>.pt`` (local or
+    ``gs://``), keeping the newest ``checkpoint_keep`` files. ``resume="auto"`` restores the newest
+    step file and continues at step N+1; an explicit path resumes from that file; nothing found =
+    clean cold start. A crash costs at most ``checkpoint_every`` steps instead of the whole run.
+    One documented approximation: the shuffled dataloader stream restarts on resume (its position
+    is not checkpointable) — which batches follow differs from an uninterrupted run, statistically
+    neutral for MLM pretraining over a cycled corpus.
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = bf16 and device.startswith("cuda")
@@ -66,8 +144,29 @@ def train_mlm(model, datamodule, *, steps: int = 100, lr: float = 3e-4, weight_d
 
     history: dict = {"train": [], "val": [], "best_val": None, "best_step": None}
     best_val, best_step, best_state = float("inf"), None, None
+    start_step = 1
+
+    src = _find_resume(checkpoint_out, resume)
+    if resume and src is None:
+        log(f"resume: nothing to resume for {checkpoint_out} — cold start")
+    elif src:
+        from credit_fm.utils import storage
+        storage.ensure_auth(src)
+        with fsspec.open(src, "rb") as f:
+            ckpt = torch.load(f, map_location="cpu", weights_only=False)
+        model.load_state_dict(ckpt["model"])
+        opt.load_state_dict(ckpt["optimizer"])
+        sched.load_state_dict(ckpt["scheduler"])
+        history = ckpt["history"]
+        best_val, best_step = ckpt["best_val"], ckpt["best_step"]
+        best_state = ckpt["best_state"]
+        _restore_rng(ckpt["rng"], device)
+        start_step = ckpt["step"] + 1
+        history["resumed_from"] = ckpt["step"]
+        log(f"resumed from {src} (step {ckpt['step']}; continuing at {start_step}/{steps})")
+
     batches = _cycle(datamodule.train_dataloader())
-    for step in range(1, steps + 1):
+    for step in range(start_step, steps + 1):
         opt.zero_grad(set_to_none=True)
         step_loss = 0.0
         for _ in range(accum):                        # accumulate `accum` micro-batches → one step
@@ -93,6 +192,9 @@ def train_mlm(model, datamodule, *, steps: int = 100, lr: float = 3e-4, weight_d
                 best_state = {k: t.detach().to("cpu").clone() for k, t in model.state_dict().items()}
                 star = "  *best"
             log(f"  [val] step {step}  loss {v:.4f}{star}")
+        if checkpoint_every and checkpoint_out and step % checkpoint_every == 0:
+            _save_step(checkpoint_out, step, model, opt, sched, history,
+                       (best_val, best_step, best_state), device, checkpoint_keep, log)
 
     if best_state is not None:
         history["best_val"], history["best_step"] = best_val, best_step

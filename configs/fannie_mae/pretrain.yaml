@@ -42,3 +42,8 @@ runtime:
 
 checkpoint:
   out: ${paths.runs}/m3_full.pt
+  every: 1000                    # mid-run step checkpoints (<out>.stepN.pt); 0 = off
+  keep: 2                        # rotate: keep the newest N step files
+
+resume: null                     # null | auto (newest step file) | explicit path;
+                                 # a killed run restarts with:  --resume auto

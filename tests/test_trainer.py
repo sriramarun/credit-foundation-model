@@ -140,3 +140,75 @@ def test_grad_accum_one_pulls_one_batch_per_step(tmp_path):
                                   profile_layers=1, event_layers=1, history_layers=1)
     train_mlm(model, dm, steps=10, lr=1e-3, warmup=2, device="cpu", log_every=0)   # grad_accum default
     assert pulled["n"] == 10                                  # one micro-batch per step
+
+
+# ------------------------------------------------------- mid-run checkpoint / resume (v1.1 G4a)
+
+def _tiny(tok):
+    return CreditFoundationModel(tok.vocab_size, len(tok.field_types), dim=16, n_heads=2,
+                                 profile_layers=1, event_layers=1, history_layers=1)
+
+
+def _train_dir(tok, tmp_path):
+    train_dir = str(tmp_path / "train")
+    _write_split(tok, _panel(10), train_dir)
+    return train_dir
+
+
+def test_step_checkpoints_written_and_rotated(tmp_path):
+    tok = KVTTokenizer(CONFIG).fit(_panel(10))
+    dm = CreditDataModule(_train_dir(tok, tmp_path), batch_size=4)
+    out = str(tmp_path / "runs" / "toy.pt")
+    (tmp_path / "runs").mkdir()
+    train_mlm(_tiny(tok), dm, steps=10, lr=1e-3, warmup=2, device="cpu", log_every=0,
+              checkpoint_every=2, checkpoint_keep=2, checkpoint_out=out)
+    files = sorted(f.name for f in (tmp_path / "runs").glob("toy.pt.step*.pt"))
+    assert files == ["toy.pt.step000008.pt", "toy.pt.step000010.pt"]   # rotated: keep newest 2
+
+
+def test_resume_noop_restores_exact_state(tmp_path):
+    """resume with steps == saved step trains 0 new steps and restores weights/history/RNG."""
+    import torch
+    tok = KVTTokenizer(CONFIG).fit(_panel(10))
+    train_dir = _train_dir(tok, tmp_path)
+    out = str(tmp_path / "toy.pt")
+
+    model_a = _tiny(tok)
+    hist_a = train_mlm(model_a, CreditDataModule(train_dir, batch_size=4), steps=10, lr=1e-3,
+                       warmup=2, device="cpu", log_every=0,
+                       checkpoint_every=5, checkpoint_out=out)
+    rng_after_a = torch.get_rng_state()
+
+    model_b = _tiny(tok)                                  # different random init...
+    hist_b = train_mlm(model_b, CreditDataModule(train_dir, batch_size=4), steps=10, lr=1e-3,
+                       warmup=2, device="cpu", log_every=0,
+                       checkpoint_every=5, checkpoint_out=out, resume="auto")
+    assert hist_b["resumed_from"] == 10 and hist_b["train"] == hist_a["train"]
+    for k, v in model_a.state_dict().items():             # ...but restored to A's exact weights
+        assert torch.equal(v, model_b.state_dict()[k]), k
+    assert torch.equal(rng_after_a, torch.get_rng_state())   # RNG stream restored too
+
+
+def test_resume_auto_continues_training(tmp_path):
+    tok = KVTTokenizer(CONFIG).fit(_panel(10))
+    train_dir = _train_dir(tok, tmp_path)
+    out = str(tmp_path / "toy.pt")
+
+    hist_a = train_mlm(_tiny(tok), CreditDataModule(train_dir, batch_size=4), steps=10, lr=1e-3,
+                       warmup=2, device="cpu", log_every=0,
+                       checkpoint_every=5, checkpoint_out=out)
+    hist_b = train_mlm(_tiny(tok), CreditDataModule(train_dir, batch_size=4), steps=14, lr=1e-3,
+                       warmup=2, device="cpu", log_every=0,
+                       checkpoint_every=5, checkpoint_out=out, resume="auto")
+    assert hist_b["resumed_from"] == 10
+    assert len(hist_b["train"]) == 14                     # 10 restored + 4 new optimiser steps
+    assert hist_b["train"][:10] == hist_a["train"]        # restored history is verbatim
+    assert np.isfinite(hist_b["train"]).all()
+
+
+def test_resume_auto_cold_start_when_nothing_saved(tmp_path):
+    tok = KVTTokenizer(CONFIG).fit(_panel(10))
+    dm = CreditDataModule(_train_dir(tok, tmp_path), batch_size=4)
+    hist = train_mlm(_tiny(tok), dm, steps=5, lr=1e-3, warmup=2, device="cpu", log_every=0,
+                     checkpoint_every=2, checkpoint_out=str(tmp_path / "fresh.pt"), resume="auto")
+    assert "resumed_from" not in hist and len(hist["train"]) == 5

@@ -64,12 +64,18 @@ def main() -> None:
     if grad_accum > 1:
         print(f"grad accumulation: {grad_accum} micro-batches/step "
               f"(effective batch {cfg.data.batch_size * grad_accum})", flush=True)
+    ckpt_every = int(cfg.get_path("checkpoint.every") or 0)
+    if ckpt_every:
+        print(f"step checkpoints: every {ckpt_every} steps, keep {cfg.get_path('checkpoint.keep', 2)}"
+              f" (resume with --resume auto)", flush=True)
     history = train_mlm(
         model, dm, steps=cfg.schedule.steps, lr=cfg.optimizer.lr,
         weight_decay=cfg.optimizer.weight_decay, warmup=cfg.optimizer.warmup,
         grad_clip=cfg.optimizer.grad_clip, grad_accum=grad_accum,
         device=cfg.runtime.device, bf16=cfg.runtime.bf16,
-        log_every=cfg.schedule.log_every, val_every=cfg.schedule.val_every)
+        log_every=cfg.schedule.log_every, val_every=cfg.schedule.val_every,
+        checkpoint_every=ckpt_every, checkpoint_keep=int(cfg.get_path("checkpoint.keep", 2) or 2),
+        checkpoint_out=cfg.get_path("checkpoint.out"), resume=cfg.get_path("resume"))
 
     first, last = history["train"][0], history["train"][-1]
     msg = f"done: train loss {first:.4f} -> {last:.4f} over {cfg.schedule.steps} steps"
