@@ -29,8 +29,8 @@ out-of-time** (see Status).
   coordinates; anchored quantile bins — DL-003/011/012. Frozen vocab `tokenizer.json`
   (552 tokens, full-corpus fit).
 - **Encode-once shards + flat `(B,L)` batches** — DL-014.
-- **Open question DL-009**: W&B hosted vs offline/self-hosted (sovereign-cloud requirement);
-  runs currently log to stdout + GCS checkpoints.
+- **DL-009 resolved (v1.1 G4c)**: pluggable metrics logger (`logging:` block — null default /
+  jsonl / tensorboard / wandb-offline); nothing phones home unless explicitly configured.
 
 ## Repo layout
 src/credit_fm/ tokenizer/ (KVT) · models/ (3-branch) · data/ · training/ · utils/

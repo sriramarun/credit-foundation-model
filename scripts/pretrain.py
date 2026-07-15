@@ -39,6 +39,7 @@ from credit_fm.data import CreditDataModule  # noqa: E402
 from credit_fm.models import CreditFoundationModel  # noqa: E402
 from credit_fm.tokenizer import KVTTokenizer  # noqa: E402
 from credit_fm.training import train_mlm  # noqa: E402
+from credit_fm.training.loggers import build_logger  # noqa: E402
 from credit_fm.training.distributed import cleanup_distributed, init_distributed  # noqa: E402
 from credit_fm.utils import storage  # noqa: E402
 from credit_fm.utils.config import parse_cli, summarize  # noqa: E402
@@ -102,6 +103,10 @@ def main() -> None:
     if ckpt_every:
         rprint(f"step checkpoints: every {ckpt_every} steps, keep {cfg.get_path('checkpoint.keep', 2)}"
                f" (resume with --resume auto)", flush=True)
+    mlog = build_logger(cfg.get_path("logging")) if info.is_main else None    # rank-0 only (G4c)
+    if mlog is not None and cfg.get_path("logging.backend"):
+        rprint(f"metrics logger: {cfg.get_path('logging.backend')}", flush=True)
+        mlog.log_config(cfg.to_dict())
     history = train_mlm(
         model, dm, steps=cfg.schedule.steps, lr=cfg.optimizer.lr,
         weight_decay=cfg.optimizer.weight_decay, warmup=cfg.optimizer.warmup,
@@ -110,7 +115,8 @@ def main() -> None:
         log_every=cfg.schedule.log_every, val_every=cfg.schedule.val_every,
         checkpoint_every=ckpt_every, checkpoint_keep=int(cfg.get_path("checkpoint.keep", 2) or 2),
         checkpoint_out=cfg.get_path("checkpoint.out"), resume=cfg.get_path("resume"),
-        dist_info=info, ddp_find_unused=bool(cfg.get_path("ddp.find_unused_parameters", True)))
+        dist_info=info, ddp_find_unused=bool(cfg.get_path("ddp.find_unused_parameters", True)),
+        metrics_logger=mlog)
 
     first, last = history["train"][0], history["train"][-1]
     msg = f"done: train loss {first:.4f} -> {last:.4f} over {cfg.schedule.steps} steps"
