@@ -180,6 +180,44 @@ def test_default_tag_sanitizes_basename():
     assert ING._default_tag("/data/part_01.parquet") == "part_01"
 
 
+# ------------------------------------------------------------------ script-run regression
+def test_ingest_script_subprocess_resolves_the_adapter(tmp_path):
+    """Run `python scripts/ingest.py` EXACTLY as the container does (subprocess from the repo
+    root, real fannie_mae adapter). Regression for the 15 Jul field failure: script-run puts
+    scripts/ on sys.path instead of the repo root, so the lazy reference_implementations import
+    raised ModuleNotFoundError and get_adapter reported 'no adapter registered' — in-process
+    tests never saw it because pytest has the root on sys.path."""
+    import subprocess
+    import sys
+    raw = pd.DataFrame({
+        "loan_identifier": [f"10{i}" for i in range(10)],
+        "monthly_reporting_period": ["012016"] * 10,
+        "origination_date": ["062015"] * 10,
+        "current_loan_delinquency_status": ["0"] * 10,
+        "zero_balance_code": [""] * 10,
+    })
+    srcs = []
+    for q in ("q1", "q2"):
+        p = tmp_path / f"raw_{q}.parquet"
+        raw.to_parquet(p, index=False)
+        srcs.append(str(p))
+    cfg = tmp_path / "ingest_test.yaml"
+    cfg.write_text(
+        "dataset: configs/fannie_mae/dataset.yaml\n"          # the real contract + adapter name
+        f"sources: {{files: [{srcs[0]}, {srcs[1]}], root: null, reporting: null}}\n"
+        f"out: {tmp_path / 'out'}\ncombined_name: panel.parquet\n"
+        "sample_pct: 100\nworkers: 1\nsharded: true\ncombine: false\nkey: null\n")
+
+    r = subprocess.run([sys.executable, str(ROOT / "scripts" / "ingest.py"), "-c", str(cfg)],
+                       capture_output=True, text=True, cwd=ROOT)
+    assert r.returncode == 0, r.stderr
+    shard_dir = tmp_path / "out" / "panel"
+    parts = sorted(p.name for p in shard_dir.glob("part-*.parquet"))
+    assert parts == ["part-raw_q1.parquet", "part-raw_q2.parquet"]
+    assert (shard_dir / "_ingest.meta.json").exists()
+    assert storage.read_parquet(str(shard_dir))["loan_id"].nunique() == 10
+
+
 def test_fannie_source_tag_extracts_quarter():
     fan = _load("reference_implementations/fannie_mae/adapter.py", "fannie_adapter_g31")
     from credit_fm.data.dataset_config import DatasetConfig
