@@ -45,5 +45,12 @@ checkpoint:
   every: 1000                    # mid-run step checkpoints (<out>.stepN.pt); 0 = off
   keep: 2                        # rotate: keep the newest N step files
 
+logging:                         # structured metrics (G4c; stdout printing is unchanged)
+  backend: null                  # null | jsonl | tensorboard | wandb (offline by default)
+  dir: runs/logs                 # jsonl/tensorboard output dir (local)
+  project: credit-fm             # wandb project
+  run_name: null                 # null = backend default
+  mode: offline                  # wandb: offline = nothing leaves the box (DL-009)
+
 resume: null                     # null | auto (newest step file) | explicit path;
                                  # a killed run restarts with:  --resume auto

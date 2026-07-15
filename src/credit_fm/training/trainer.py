@@ -125,6 +125,7 @@ def train_mlm(model, datamodule, *, steps: int = 100, lr: float = 3e-4, weight_d
               checkpoint_every: int = 0, checkpoint_keep: int = 2,
               checkpoint_out: str | None = None, resume=None,
               dist_info: DistInfo | None = None, ddp_find_unused: bool = True,
+              metrics_logger=None,
               log: Callable[[str], None] = print) -> dict:
     """Train ``model`` for ``steps`` optimiser steps on ``datamodule``; return a loss history.
 
@@ -157,6 +158,8 @@ def train_mlm(model, datamodule, *, steps: int = 100, lr: float = 3e-4, weight_d
     use_amp = bf16 and device.startswith("cuda")
     accum = max(int(grad_accum), 1)
     log_main = log if info.is_main else (lambda *a, **k: None)   # only rank 0 speaks
+    from .loggers import NullLogger
+    mlog = metrics_logger if (metrics_logger is not None and info.is_main) else NullLogger()
 
     raw_model = model.to(device)
     raw_model.train()
@@ -216,6 +219,7 @@ def train_mlm(model, datamodule, *, steps: int = 100, lr: float = 3e-4, weight_d
         history["train"].append(step_loss)
         if log_every and (step % log_every == 0 or step == 1):
             log_main(f"step {step}/{steps}  loss {step_loss:.4f}  lr {sched.get_last_lr()[0]:.2e}")
+            mlog.log_metrics(step, {"train/loss": step_loss, "train/lr": sched.get_last_lr()[0]})
         if val_every and datamodule.val is not None and step % val_every == 0:
             if info.is_main:                          # rank 0 evaluates the raw (unwrapped) model
                 v = _evaluate(raw_model, datamodule, device, use_amp)
@@ -227,6 +231,7 @@ def train_mlm(model, datamodule, *, steps: int = 100, lr: float = 3e-4, weight_d
                                   for k, t in raw_model.state_dict().items()}
                     star = "  *best"
                 log_main(f"  [val] step {step}  loss {v:.4f}{star}")
+                mlog.log_metrics(step, {"val/loss": v})
             barrier()                                 # other ranks wait out rank 0's eval
         if checkpoint_every and checkpoint_out and step % checkpoint_every == 0:
             if info.is_main:
@@ -239,6 +244,8 @@ def train_mlm(model, datamodule, *, steps: int = 100, lr: float = 3e-4, weight_d
         if restore_best:
             raw_model.load_state_dict(best_state)
             log_main(f"restored best checkpoint: val {best_val:.4f} @ step {best_step}")
+    mlog.finish({"best_val": history["best_val"], "best_step": history["best_step"],
+                 "final_train_loss": history["train"][-1] if history["train"] else None})
     return history
 
 

@@ -12,7 +12,7 @@ Running record of locked decisions. Each entry: decision, rationale, status.
 | DL-006 | HuggingFace primary, NeMo optional | locked |
 | DL-007 | Loan-stratified temporal split; derived origination | locked |
 | DL-008 | Tokenizer vocab + numeric bins fit on `train` only | locked |
-| DL-009 | W&B hosted vs offline/self-hosted | **open** (resolve before pretraining) |
+| DL-009 | Training telemetry: pluggable logger, nothing phones home by default | locked (14 Jul) |
 | DL-010 | Field selection: drop 11 constant + 16 redundant/derived | locked |
 | DL-011 | Per-event calendar/macro-regime token `cal=<YYYYQ#>` | locked |
 | DL-012 | Threshold-anchored + per-field numeric bins | locked |
@@ -100,3 +100,18 @@ Chinchilla budget for 25.5M params (~500M tokens ≈ ~2M loans; DL-004), so memo
 4. **MLM val loss is a proxy with an entropy floor** (exact FICO/UPB buckets are inherently
    unpredictable). The FM's gating metric is the **downstream OOT eval vs ROC 0.757** (Phase E),
    not MLM loss.
+
+## DL-009 — Training telemetry (resolved 14 Jul 2026, v1.1 G4c)
+
+**Decision.** Structured metrics go through a pluggable logger (`credit_fm.training.loggers`,
+config block `logging:`), and **no backend phones home unless explicitly configured to**:
+
+- default `backend: null` — stdout printing only (pre-G4c behavior, byte-identical);
+- `jsonl` — zero-dependency local JSON-lines file (the sovereign-cloud workhorse);
+- `tensorboard` — local event files;
+- `wandb` — strictly opt-in and **offline by default** (`mode: offline`; sync later with
+  `wandb sync` if a hosted/self-hosted instance is ever approved).
+
+**Why.** The sovereign-cloud requirement rules out default hosted telemetry; the framework goal
+rules out hard-coding any one vendor. A four-line interface (`log_config` / `log_metrics` /
+`finish`) keeps backends swappable, imports lazy, and rank-0-only under DDP.
