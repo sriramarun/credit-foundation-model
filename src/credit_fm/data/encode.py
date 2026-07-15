@@ -85,8 +85,8 @@ def _worker_init(tokenizer_path: str, key) -> None:
 def _encode_shard(task):
     """Worker task: encode one sub-panel and write its shard parquet; return (name, loans, tokens)."""
     from credit_fm.utils import storage
-    sid, sub, out_dir, key = task
-    name = f"shard-{sid:05d}.parquet"
+    sid, sub, out_dir, key, prefix = task
+    name = f"{prefix}{sid:05d}.parquet"
     shard = encode_panel(_WORKER_TOK, sub)
     storage.ensure_auth(out_dir, key)
     storage.write_parquet(shard, storage.join(out_dir, name))
@@ -123,12 +123,15 @@ def encode_panel_parallel(tokenizer, tokenizer_path: str, panel: pd.DataFrame, *
 
 
 def encode_to_shards(tokenizer, tokenizer_path: str, panel: pd.DataFrame, out_dir: str, *,
-                     shard_size: int = 50_000, workers: int = 0, key=None, log=print):
+                     shard_size: int = 50_000, workers: int = 0, key=None,
+                     name_prefix: str = "shard-", log=print):
     """Encode ``panel`` to sharded parquet under ``out_dir``; return ``(shard_names, n_loans, n_tokens)``.
 
     ``workers <= 1`` encodes in-process. ``workers > 1`` fans the shards out across that many worker
     processes (each loads ``tokenizer_path`` once) — the speed-up that makes a full-corpus encode
-    feasible. Shard names are deterministic (``shard-<id>.parquet``) regardless of completion order.
+    feasible. Shard names are deterministic (``<name_prefix><id>.parquet``, default
+    ``shard-<id>.parquet``) regardless of completion order; the streaming encode (G3.2) passes a
+    per-bucket prefix so buckets don't collide in one output dir.
     """
     from credit_fm.utils import storage
     idc = tokenizer.id_col
@@ -136,7 +139,7 @@ def encode_to_shards(tokenizer, tokenizer_path: str, panel: pd.DataFrame, out_di
 
     def _tasks():
         for sid, sub in _iter_subpanels(panel, idc, shard_size):
-            yield sid, sub, out_dir, key
+            yield sid, sub, out_dir, key, name_prefix
 
     if workers and workers > 1:
         import multiprocessing as mp
@@ -151,8 +154,8 @@ def encode_to_shards(tokenizer, tokenizer_path: str, panel: pd.DataFrame, out_di
                 n_tokens += nt
                 log(f"  wrote {name}  ({nl:,} loans, {nt:,} tokens)")
     else:
-        for sid, sub, od, k in _tasks():
-            name = f"shard-{sid:05d}.parquet"
+        for sid, sub, od, k, prefix in _tasks():
+            name = f"{prefix}{sid:05d}.parquet"
             shard = encode_panel(tokenizer, sub)
             storage.write_parquet(shard, storage.join(od, name))
             names.append(name)

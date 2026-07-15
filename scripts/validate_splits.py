@@ -2,8 +2,9 @@
 # Copyright (c) 2026 finevals.ai and contributors.
 """Validate a prepared train/val/test split against the split invariants — read-only audit.
 
-Proves the *produced split* is correct (not just the code): the three parquets + ``splits.csv`` +
-``splits.meta.json`` obey the loan-stratified temporal contract —
+Proves the *produced split* is correct (not just the code): the three split outputs (single
+parquets, or the G3.2 streamed ``<split>/bucket-*/`` directories — auto-detected) +
+``splits.csv`` + ``splits.meta.json`` obey the loan-stratified temporal contract —
 
   A) train / val / test loan-sets are **disjoint** (the core leakage guard);
   B) each loan's whole history is in exactly one split (implied by A + C at loan level);
@@ -33,12 +34,17 @@ SPLITS = ("train", "val", "test")
 
 
 def _read(path: str, columns=None) -> pd.DataFrame:
-    # read via gcsfs for gs:// (this Arrow build has no native GCS); column projection still applies
-    if path.startswith("gs://"):
-        import gcsfs
-        with gcsfs.GCSFileSystem().open(path[len("gs://"):]) as f:
-            return pd.read_parquet(f, columns=columns)
-    return pd.read_parquet(path, columns=columns)
+    # storage.read_parquet handles single files AND directories (the G3.2 bucketed split layout),
+    # local or gs:// (this Arrow build has no native GCS; it reads via gcsfs)
+    from credit_fm.utils import storage
+    return storage.read_parquet(path, columns=columns)
+
+
+def _split_source(d: str, s: str) -> str:
+    """Where split ``s`` lives: ``<d>/<s>.parquet`` (v1.0) or the ``<d>/<s>/`` dir (G3.2 streamed)."""
+    from credit_fm.utils import storage
+    single = _join(d, f"{s}.parquet")
+    return single if storage.exists(single) else _join(d, s)
 
 
 def _read_text(path: str) -> str:
@@ -79,7 +85,7 @@ def main() -> int:
     cols = [id_col] + [c for c in {explicit_orig, reporting_col} if c]
     frames = {}
     for s in SPLITS:
-        frames[s] = _read(_join(args.dir, f"{s}.parquet"), columns=cols)
+        frames[s] = _read(_split_source(args.dir, s), columns=cols)
     # normalise ids to str everywhere — Fannie loan_ids are numeric-looking, and CSV round-trips
     # coerce them to int, which would spuriously mismatch the parquet's string ids
     loans = {s: set(frames[s][id_col].astype(str).unique()) for s in SPLITS}

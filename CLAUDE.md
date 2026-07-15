@@ -5,8 +5,9 @@ Guidance for Claude Code (and humans) working in this repo. Read this first when
 ## What this is
 
 An **open-source (Apache 2.0) framework for training credit foundation models** (`credit_fm`
-package) plus reference implementations, by **finevals.ai**. Compute: 8× H100 box (single-GPU
-runs today; DDP deliberately last).
+package) plus reference implementations, by **finevals.ai**. Compute: 8× H100 box (8-GPU DDP
+since v1.1 G4b: `PYTHONPATH=src python -m torch.distributed.run --standalone --nproc_per_node 8 …`,
+never bare `torchrun`).
 
 **Reference corpus: Fannie Mae Single-Family Loan Performance** (real-world US fixed-rate
 mortgages, 2000–2024, ~3.3B loan-month rows; pretraining uses a validated 4% loan-hash
@@ -58,9 +59,13 @@ tests/ unit + artifact-validator tests
   (`validate_ingest`, `validate_splits`), incl. negative controls. 4% sample proven
   REPRESENTATIVE vs the 100% book (pooled default 0.671% vs 0.648%).
 - **Open:** score_portfolio (#6), sample outputs (#9), research paper (#14), tech-report final
-  review (#17), HF weights publish (deferred), crisis-OOT rerun, calibration, DDP.
+  review (#17), HF weights publish (deferred), packaging (v1.1 G5), calibration+serving (G6).
   **v1.1 science queued:** multi-objective pretraining (next-period heads), numeric
   value-embeddings, macro context — see internal PLAN.md.
+- **Scale-out data path (v1.1 G3):** ingest is sharded + resumable (one `part-<quarter>.parquet`
+  per source; rerun skips completed quarters); `prepare_data --stream true` splits any-size
+  panels in two streamed passes into `<split>/bucket-<k>/` loan-hash dirs; `encode_dataset`
+  auto-detects buckets and encodes one at a time — the 100% corpus (~3.3B rows) fits the box.
 
 ## Data (none committed — all gitignored)
 - **Mortgage reference:** GCS `gs://sriram-credit-fm-data` — raw Hive-partitioned source →
