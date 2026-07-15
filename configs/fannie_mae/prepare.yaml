@@ -18,3 +18,9 @@ seasoning_col: seasoning_months
 
 out_dir: ${paths.processed}
 fractions: [0.8, 0.1, 0.1]          # train, val, test (sum to 1.0)
+
+stream: false                       # true = two-pass streaming split (G3.2): never loads the
+                                    # panel; writes <out>/<split>/bucket-<k>/ dirs of whole loans
+buckets: 64                         # loan-hash buckets per split (stream mode); size so one
+                                    # bucket (~rows/buckets) fits RAM for the encode stage
+batch_rows: 2000000                 # rows per streamed batch (both passes)

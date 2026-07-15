@@ -16,9 +16,20 @@ Origination key (what the temporal split orders by) comes from one of two modes:
   * derive (default)           — the Dutch RMBS panel has no origination-date column, so
     derive a month-precise origination from ``reporting_date - seasoning_months``.
 
+**Streaming mode (v1.1 G3.2)** — ``stream: true`` splits a panel of ANY size (the 100% corpus)
+without loading it: pass 1 streams only the id/origination columns to compute the loan-hash
+split; pass 2 streams every row into ``<out-dir>/<split>/bucket-<k>/part-<i>.parquet``, bucketed
+by ``hash(loan_id)`` so each bucket dir holds whole loans (what ``encode_dataset`` consumes
+bucket-by-bucket). The split *assignment* is identical to the in-RAM path (same seedless
+deterministic ordering); only the output layout changes — per-split **directories** instead of
+single parquets, still readable as one dataset via ``storage.read_parquet(<dir>)``.
+
 Config-driven (recipe: ``configs/fannie_mae/prepare.yaml``)::
 
     python scripts/prepare_data.py -c configs/fannie_mae/prepare.yaml
+    # 100% corpus from the G3.1 ingest shard dir, streamed:
+    python scripts/prepare_data.py -c configs/fannie_mae/prepare.yaml \
+        --input gs://.../raw/fannie_mae/panel_2000_2024 --stream true --buckets 256
     # Dutch panel (derive mode): null origination_col derives reporting - seasoning
     python scripts/prepare_data.py -c configs/fannie_mae/prepare.yaml \
         --input data/raw/all_cutoffs.parquet --origination_col null --out_dir data/processed
@@ -33,6 +44,7 @@ from datetime import date
 import pandas as pd
 
 from credit_fm.data.splits import SPLITS, temporal_loan_split
+from credit_fm.data.streaming import stream_loan_origination, stream_split_to_buckets
 from credit_fm.utils import storage
 from credit_fm.utils.config import parse_cli, summarize
 from credit_fm.utils.reproducibility import set_seed
@@ -75,27 +87,40 @@ def _loan_origination(panel: pd.DataFrame, cfg) -> pd.Series:
 def main() -> None:
     cfg = parse_cli(__doc__, default_config="configs/fannie_mae/prepare.yaml")
     print(f"config: {cfg.config_path}\n"
-          f"{summarize(cfg, 'input', 'origination_col', 'out_dir', 'fractions', 'seed')}", flush=True)
+          f"{summarize(cfg, 'input', 'origination_col', 'out_dir', 'fractions', 'seed', 'stream')}",
+          flush=True)
     set_seed(cfg.seed)
 
     fractions = tuple(float(x) for x in cfg.fractions)
     in_path, out = cfg.input, cfg.out_dir.rstrip("/")
     storage.ensure_auth(in_path, cfg.key)
     storage.ensure_auth(out, cfg.key)
-
-    print(f"Loading {in_path} ...")
-    panel = storage.read_parquet(in_path)
     rmax = cfg.get_path("reporting_max")
-    if rmax:
-        dt = pd.to_datetime(panel[cfg.reporting_col], errors="coerce")
-        n0 = len(panel)
-        panel = panel[dt <= pd.to_datetime(str(rmax))]
-        print(f"reporting_max {rmax}: {n0:,} -> {len(panel):,} rows "
-              "(temporal cap — keeps the pretrain corpus blind to the OOT test era)")
-    if cfg.id_col not in panel.columns:
-        raise SystemExit(f"Column '{cfg.id_col}' not in panel. Available: {list(panel.columns)}")
+    stream = bool(cfg.get_path("stream"))
+    buckets = int(cfg.get_path("buckets", 64) or 64)
+    batch_rows = int(cfg.get_path("batch_rows", 2_000_000) or 2_000_000)
 
-    origination = _loan_origination(panel, cfg)
+    if stream:                                   # G3.2 pass 1: origination scan, never the panel
+        print(f"Streaming {in_path} (pass 1: origination scan, "
+              f"batches of {batch_rows:,} rows) ...", flush=True)
+        origination = stream_loan_origination(
+            in_path, id_col=cfg.id_col, origination_col=cfg.get_path("origination_col"),
+            reporting_col=cfg.reporting_col, seasoning_col=cfg.get_path("seasoning_col"),
+            reporting_max=rmax, batch_rows=batch_rows)
+        panel = None
+    else:
+        print(f"Loading {in_path} ...")
+        panel = storage.read_parquet(in_path)
+        if rmax:
+            dt = pd.to_datetime(panel[cfg.reporting_col], errors="coerce")
+            n0 = len(panel)
+            panel = panel[dt <= pd.to_datetime(str(rmax))]
+            print(f"reporting_max {rmax}: {n0:,} -> {len(panel):,} rows "
+                  "(temporal cap — keeps the pretrain corpus blind to the OOT test era)")
+        if cfg.id_col not in panel.columns:
+            raise SystemExit(f"Column '{cfg.id_col}' not in panel. Available: {list(panel.columns)}")
+        origination = _loan_origination(panel, cfg)
+
     mode = cfg.get_path("origination_col") or f"derived({cfg.reporting_col}-{cfg.seasoning_col})"
     print(f"Origination key: {mode}  "
           f"({str(origination.min().date())} -> {str(origination.max().date())})")
@@ -103,29 +128,44 @@ def main() -> None:
     assignment = temporal_loan_split(origination, fractions=fractions)
     split_series = pd.Series(assignment, name="split")
 
-    # write per-split parquets — a loan's entire history travels together
-    panel = panel.assign(_split=panel[cfg.id_col].map(assignment))
     counts: dict[str, int] = {}
     ranges: dict[str, list[str]] = {}
-    for s in SPLITS:
-        sub = panel[panel["_split"] == s].drop(columns="_split")
-        storage.write_parquet(sub, storage.join(out, f"{s}.parquet"))
-        orig_in = origination[split_series[split_series == s].index]
-        counts[s] = int(split_series.eq(s).sum())
-        ranges[s] = [str(orig_in.min().date()), str(orig_in.max().date())]
-        print(f"  {s:>5}: {counts[s]:>7,} loans  {len(sub):>10,} rows  "
-              f"origination {ranges[s][0]} -> {ranges[s][1]}")
+    if stream:                                   # G3.2 pass 2: route rows to loan-hash buckets
+        print(f"Streaming pass 2: routing rows to {buckets} loan-hash buckets per split ...",
+              flush=True)
+        rows = stream_split_to_buckets(
+            in_path, assignment, out, id_col=cfg.id_col, reporting_col=cfg.reporting_col,
+            reporting_max=rmax, buckets=buckets, batch_rows=batch_rows)
+        for s in SPLITS:
+            orig_in = origination[split_series[split_series == s].index]
+            counts[s] = int(split_series.eq(s).sum())
+            ranges[s] = [str(orig_in.min().date()), str(orig_in.max().date())]
+            print(f"  {s:>5}: {counts[s]:>7,} loans  {rows[s]:>10,} rows -> {out}/{s}/  "
+                  f"origination {ranges[s][0]} -> {ranges[s][1]}")
+    else:
+        # write per-split parquets — a loan's entire history travels together
+        panel = panel.assign(_split=panel[cfg.id_col].map(assignment))
+        for s in SPLITS:
+            sub = panel[panel["_split"] == s].drop(columns="_split")
+            storage.write_parquet(sub, storage.join(out, f"{s}.parquet"))
+            orig_in = origination[split_series[split_series == s].index]
+            counts[s] = int(split_series.eq(s).sum())
+            ranges[s] = [str(orig_in.min().date()), str(orig_in.max().date())]
+            print(f"  {s:>5}: {counts[s]:>7,} loans  {len(sub):>10,} rows  "
+                  f"origination {ranges[s][0]} -> {ranges[s][1]}")
 
     # loan_id -> split
     csv = split_series.rename_axis(cfg.id_col).reset_index().to_csv(index=False)
     storage.write_text(csv, storage.join(out, "splits.csv"))
 
-    # audit manifest
+    # audit manifest (a shard-DIR source has no single-file hash — record the layout instead)
     meta = {
         "seed": cfg.seed,
         "split_date": date.today().isoformat(),
         "source_panel": in_path,
-        "source_panel_sha256": storage.sha256(in_path),
+        "source_panel_sha256": ("(directory)" if storage.isdir(in_path)
+                                else storage.sha256(in_path)),
+        "out_layout": f"bucketed_dirs({buckets})" if stream else "single_parquet",
         "n_loans": counts,
         "split_criterion": "loan_stratified_temporal_origination",
         "origination_key": mode,
