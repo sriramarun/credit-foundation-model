@@ -41,14 +41,25 @@ SPLITS = ("train", "val", "test")
 
 
 def _dataset(url: str, columns=None):
-    """Open a parquet file or directory as a pyarrow dataset (local or fsspec-backed)."""
+    """Open a parquet file or directory as a pyarrow dataset (local or fsspec-backed).
+
+    Shard dirs from the sharded ingest may disagree on all-null column types (a field empty in
+    one quarter, populated in another) — unify the schema up front so ``to_batches`` can't die
+    mid-stream on ``Unsupported cast from string to null``.
+    """
     import pyarrow.dataset as pds
     if "://" not in str(url):
-        return pds.dataset(str(url), format="parquet")
-    from pyarrow.fs import FSSpecHandler, PyFileSystem
-    storage.ensure_auth(url)
-    fs, path = fsspec.core.url_to_fs(url)
-    return pds.dataset(path, filesystem=PyFileSystem(FSSpecHandler(fs)), format="parquet")
+        ds, fs, path = pds.dataset(str(url), format="parquet"), None, str(url)
+    else:
+        from pyarrow.fs import FSSpecHandler, PyFileSystem
+        storage.ensure_auth(url)
+        raw_fs, path = fsspec.core.url_to_fs(url)
+        fs = PyFileSystem(FSSpecHandler(raw_fs))
+        ds = pds.dataset(path, filesystem=fs, format="parquet")
+    schema = storage._unify_fragment_schemas(ds)
+    if not schema.equals(ds.schema):
+        ds = pds.dataset(path, filesystem=fs, format="parquet", schema=schema)
+    return ds
 
 
 def iter_fragments(url: str, *, columns: list[str] | None = None,

@@ -90,3 +90,39 @@ def test_retry_gives_up_after_max_tries():
     with pytest.raises(TimeoutError):
         storage.retry(always_flaky, tries=3, base_delay=0.0)
     assert calls["n"] == 3                        # exactly `tries` attempts, then propagate
+
+
+# ------------------------------------------------------- heterogeneous shard dirs (G3.1 fallout)
+def test_read_parquet_dir_unifies_all_null_column_schemas(tmp_path):
+    """Per-quarter shards disagree on all-null columns: a field entirely empty in one shard is
+    arrow `null` there and `string` elsewhere — the real 10%-rerun failure (year-2000 quarters
+    have no REO/modification values). The directory read must unify, not die on
+    'Unsupported cast from string to null'."""
+    import pandas as pd
+
+    from credit_fm.utils import storage
+    a = pd.DataFrame({"loan_id": ["L1", "L2"], "deal_name": [None, None]})   # null-typed column
+    b = pd.DataFrame({"loan_id": ["L3", "L4"], "deal_name": ["CAS-16", None]})
+    a.to_parquet(tmp_path / "part-2000Q1.parquet", index=False)
+    b.to_parquet(tmp_path / "part-2016Q1.parquet", index=False)
+
+    out = storage.read_parquet(str(tmp_path)).sort_values("loan_id").reset_index(drop=True)
+    assert len(out) == 4
+    assert out["deal_name"].tolist()[:2] == [None, None]                 # nulls preserved
+    assert out.loc[out.loan_id == "L3", "deal_name"].iloc[0] == "CAS-16" # strings preserved
+    # column projection through the unified schema also works
+    proj = storage.read_parquet(str(tmp_path), columns=["loan_id"])
+    assert sorted(proj["loan_id"]) == ["L1", "L2", "L3", "L4"]
+
+
+def test_streaming_iterates_heterogeneous_shard_dir(tmp_path):
+    """iter_fragments over the same heterogeneous dir must not die mid-stream (pass 1/2 path)."""
+    import pandas as pd
+
+    from credit_fm.data.streaming import iter_fragments
+    pd.DataFrame({"loan_id": ["L1"], "x": [None]}).to_parquet(tmp_path / "part-a.parquet", index=False)
+    pd.DataFrame({"loan_id": ["L2"], "x": ["v"]}).to_parquet(tmp_path / "part-b.parquet", index=False)
+    frames = list(iter_fragments(str(tmp_path), batch_rows=10))
+    assert sum(len(f) for f in frames) == 2
+    got = pd.concat(frames, ignore_index=True)
+    assert set(got.loc[got.x.notna(), "x"]) == {"v"}
