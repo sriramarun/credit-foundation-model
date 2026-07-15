@@ -34,6 +34,20 @@ the engineering baseline.
 The framework is **schema-agnostic and config-driven**: adapt to a new asset class by writing
 YAML recipes, then running the same scripts — no code changes.
 
+## Bring your own dataset
+
+Onboarding is one contract file — `configs/<asset>/dataset.yaml` — declaring your id/time
+columns, task labels, and the machine-enforced leakage list. If your panel already conforms,
+`adapter: generic` means **zero code**; if the raw source needs parsing, you write one adapter
+class outside the core package. Then the identical scripts run split → tokenize → encode →
+pretrain → finetune, with an artifact validator auditing each stage. New task = one YAML block
+(prepayment on the reference corpus is literally `label: prepay_12m`).
+
+Start with [`docs/extending.md`](docs/extending.md) and the runnable walkthrough
+[`notebooks/05_new_dataset.ipynb`](notebooks/05_new_dataset.ipynb); the recipe grammar
+(includes, `${...}` interpolation, dotted CLI overrides) is
+[`docs/configuration.md`](docs/configuration.md).
+
 ## Architecture (three-branch encoder)
 
 ```
@@ -72,9 +86,9 @@ Start with the data bible: [`notebooks/00_data_bible.ipynb`](notebooks/00_data_b
 | Framework (`credit_fm`) | `src/credit_fm/` | KVT tokenizer, three-branch model, data layer, training, utils |
 | Pipeline scripts | `scripts/` | one config-driven script per stage (ingest → … → finetune) + artifact validators |
 | Recipes | `configs/fannie_mae/`, `configs/dutch_mortgages/` | YAML per asset class; stage recipes + generated schemas |
-| Notebooks | `notebooks/` | `00_data_bible` · `01_data_splits` · `02_schema_classification` (builder-generated) |
-| Reference implementations | `reference_implementations/` | per-asset runbooks |
-| Docs | `docs/` | architecture · tokenization · training · evaluation · decision log · cards |
+| Notebooks | `notebooks/` | `00_data_bible` … `05_new_dataset` (builder-generated) |
+| Reference implementations | `reference_implementations/` | per-asset adapters + runbooks |
+| Docs | `docs/` | architecture · configuration · extending · tokenization · training · evaluation · decision log · cards |
 
 ## Differentiation
 
@@ -94,10 +108,12 @@ Every script follows one grammar: `-c <recipe.yaml>` plus dotted overrides
 [`docs/container_setup.md`](docs/container_setup.md); otherwise:
 
 ```bash
-pip install -e .
+pip install -e ".[gcs,baselines]"     # extras: [gcs] gs:// backend · [baselines] xgboost ·
+                                      #         [logging] wandb/tensorboard · [dev] tests+lint
 
-# 1. ingest the raw source into a per-loan monthly panel (labels derived)
-python scripts/ingest_fannie_mae.py -c configs/fannie_mae/ingest.yaml
+# 1. ingest the raw source into a per-loan monthly panel (labels derived);
+#    sharded + resumable — a killed run reruns the same command and skips finished quarters
+python scripts/ingest.py -c configs/fannie_mae/ingest.yaml
 
 # 2. loan-stratified temporal split (+ artifact audit)
 python scripts/prepare_data.py -c configs/fannie_mae/prepare.yaml
@@ -107,7 +123,8 @@ python scripts/validate_splits.py --dir <out_dir>
 python scripts/classify_schema.py -c configs/fannie_mae/classify.yaml
 python scripts/train_tokenizer.py -c configs/fannie_mae/tokenizer_fit.yaml
 
-# 5-6. encode-once shards + MLM pretraining
+# 5-6. encode-once shards + MLM pretraining (multi-GPU: python -m torch.distributed.run
+#       --standalone --nproc_per_node 8 scripts/pretrain.py -c <recipe>)
 python scripts/encode_dataset.py -c configs/fannie_mae/encode.yaml
 python scripts/pretrain.py -c configs/fannie_mae/pretrain.yaml
 
