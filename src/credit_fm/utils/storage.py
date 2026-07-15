@@ -21,7 +21,10 @@ from typing import Any, Callable, TypeVar
 import fsspec
 import pandas as pd
 
-GCS_DEFAULT_KEY = "/workspace/.gcloud/credit-fm-sa.json"  # service-account key on the container
+# Default gs:// service-account key: the CREDIT_FM_GCS_KEY env var wins (set it on any machine —
+# setup_container.sh exports it on the reference box); the historical container path is the
+# fallback so existing boxes keep working with zero configuration (v1.1 G5.1 de-hardcode).
+GCS_DEFAULT_KEY = os.environ.get("CREDIT_FM_GCS_KEY", "/workspace/.gcloud/credit-fm-sa.json")
 
 T = TypeVar("T")
 

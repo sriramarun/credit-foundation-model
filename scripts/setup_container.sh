@@ -65,6 +65,15 @@ else
   echo "    no $SECRETS found — create it with WANDB_API_KEY / HF_TOKEN (see docs)"
 fi
 
+echo "==> 5b. Storage env (v1.1 G5.1 — the package reads these instead of hardcoded paths)"
+GCS_KEY="${CREDIT_FM_GCS_KEY:-$WORKSPACE/.gcloud/credit-fm-sa.json}"
+grep -q "CREDIT_FM_GCS_KEY" ~/.bashrc 2>/dev/null \
+  || echo "export CREDIT_FM_GCS_KEY=$GCS_KEY" >> ~/.bashrc
+export CREDIT_FM_GCS_KEY="$GCS_KEY"
+[ -f "$GCS_KEY" ] && echo "    CREDIT_FM_GCS_KEY=$GCS_KEY" \
+  || echo "    CREDIT_FM_GCS_KEY=$GCS_KEY (key file not present yet — place it there for gs:// access)"
+# Optional: export CREDIT_FM_BUCKET=gs://<your-bucket> to repoint the run_*.sh experiment scripts.
+
 echo "==> 6. Git: identity + credential persistence (push-ready from the container)"
 # Persist the PAT under the volume so pushes survive restarts/recreates.
 git config --global credential.helper "store --file=$WORKSPACE/.git-credentials"
