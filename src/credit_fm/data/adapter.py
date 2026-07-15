@@ -69,11 +69,22 @@ def get_adapter(config: DatasetConfig, **options: Any) -> DatasetAdapter:
     if name == "generic":
         return GenericParquetAdapter(config, **options)
     if name not in REGISTRY:
+        import importlib
         try:
-            import importlib
             importlib.import_module(f"reference_implementations.{name}")
-        except ImportError:
-            pass
+        except ModuleNotFoundError:
+            # `python scripts/<stage>.py` puts scripts/ — not the repo root — on sys.path, so the
+            # repo-local reference_implementations package isn't importable. The recipes' relative
+            # paths already require running from the repo root, so key off cwd and retry. Only
+            # ModuleNotFoundError is caught: a broken adapter module must raise ITS error, not be
+            # masked as "no adapter registered".
+            import sys
+            from pathlib import Path
+            root = Path.cwd()
+            if (root / "reference_implementations" / name).is_dir():
+                if str(root) not in sys.path:
+                    sys.path.insert(0, str(root))
+                importlib.import_module(f"reference_implementations.{name}")
     if name not in REGISTRY:
         raise KeyError(
             f"no adapter registered for '{name}' (registered: {sorted(REGISTRY) or 'none'}). "
