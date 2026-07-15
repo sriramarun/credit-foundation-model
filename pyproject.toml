@@ -38,7 +38,8 @@ dependencies = [
 gcs = ["gcsfs"]                            # gs:// storage backend (reference corpus lives on GCS)
 baselines = ["xgboost"]                    # tabular baseline + embeddings-downstream scripts
 logging = ["wandb", "tensorboard"]         # optional metrics-logger backends (DL-009: opt-in only)
-dev = ["pytest", "pytest-cov", "ruff"]
+serving = ["fastapi", "uvicorn"]           # the serving example (reference_implementations/*/serve.py)
+dev = ["pytest", "pytest-cov", "ruff", "fastapi", "httpx"]   # fastapi+httpx: serve.py tests
 nemo = ["nemo-toolkit"]
 
 [project.urls]
