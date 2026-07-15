@@ -18,3 +18,6 @@ out: ${paths.raw}
 combined_name: panel.parquet
 sample_pct: 10             # keep ~N% of loans (hash on loan_id)
 workers: 8                 # parallel source reads (threads)
+sharded: true              # one part-<quarter>.parquet per source, resumable (G3.1);
+                           # false = v1.0 single combined file
+combine: false             # after sharding, ALSO write <combined_name> (RAM-bound; never 100%)

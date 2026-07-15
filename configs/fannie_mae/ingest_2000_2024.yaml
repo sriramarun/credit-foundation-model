@@ -18,3 +18,6 @@ out: ${paths.raw}
 combined_name: panel_2000_2024.parquet
 sample_pct: 4              # ~4B rows full -> ~160M rows; hash on loan_id (consistent subset)
 workers: 8
+sharded: true              # one part-<quarter>.parquet per source under <out>/panel_2000_2024/;
+                           # killed run? rerun the same command — completed quarters are skipped
+combine: false             # true ALSO writes the v1.0 single file (RAM-bound; never at 100%)
