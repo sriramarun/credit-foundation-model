@@ -95,6 +95,6 @@ unseen/missing). Encoding is deterministic and reproducible via
 
 ## Maintenance
 
-- Regenerate via `scripts/ingest_fannie_mae.py -c configs/fannie_mae/ingest_2000_2024.yaml` then
+- Regenerate via `scripts/ingest.py -c configs/fannie_mae/ingest_2000_2024.yaml` then
   `prepare_data.py`. New Fannie releases extend the reporting range; re-fit the tokenizer on the
   new train split (DL-008) if the vintage span changes materially.

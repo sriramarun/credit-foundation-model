@@ -167,5 +167,5 @@ trains.
 | Hierarchical model (M2 Brick 2) | ✅ done — ~26M @ dim384; architecture frozen |
 | Training loop | ✅ done — AdamW+cosine, dropout, best-val checkpointing (`train_mlm`, `pretrain.py`) |
 | Pretraining at scale (M3/M5) | ✅ done — full 25-year corpus (4% loan sample), parallel encode |
-| Embeddings + downstream eval | ✅ done — **OOT verdict: FM full 0.8257/0.0113 beats XGB 0.7913/0.0057** (2022–23 obs → 2023–24 defaults) |
-| Multi-GPU DDP · batch scoring · calibration | ⬜ tracked follow-ups |
+| Embeddings + downstream eval | ✅ done — **OOT verdict: FM 100M full 0.8468/0.0175 beats XGB 0.7913/0.0057** (2022–23 obs → 2023–24 defaults; 26M: 0.8257/0.0113) |
+| Multi-GPU DDP · batch scoring · calibration · serving example | ✅ done (v1.1 G4b / #6 / G6.1 / G6.2) |

@@ -35,31 +35,40 @@ out-of-time** (see Status).
 
 ## Repo layout
 src/credit_fm/ tokenizer/ (KVT) · models/ (3-branch) · data/ · training/ · utils/
-scripts/ one config-driven script per stage: ingest_fannie_mae · prepare_data · classify_schema ·
-train_tokenizer · encode_dataset · pretrain · extract_embeddings · evaluate_downstream ·
-finetune · train_baseline · build_oot_baseline · publish_model · profile/compare ·
-validate_ingest/validate_splits (artifact auditors) · setup_container.sh
+scripts/ one config-driven script per stage: ingest (asset-blind, sharded+resumable) ·
+prepare_data · classify_schema · train_tokenizer · encode_dataset · pretrain ·
+extract_embeddings · evaluate_downstream · finetune · score_portfolio · calibrate ·
+train_baseline · build_oot_baseline · publish_model · profile/compare ·
+validate_{ingest,splits,dataset,scores} (artifact auditors) · run_*.sh · setup_container.sh
 configs/ fannie_mae/ (reference) · dutch_mortgages/ (validation) — common.yaml + stage recipes
 notebooks/ 00_data_bible · 01_data_splits · 02_schema_classification · 03_tokenizer_training · 04_encode · 05_new_dataset (+ build_*.py generators —
 edit the builder, never the .ipynb)
-reference_implementations/ fannie_mae/ · dutch_mortgages/ (runbook READMEs)
+reference_implementations/ fannie_mae/ (adapter · glossary · serve.py FastAPI example ·
+runbook README) · dutch_mortgages/
 models/ packaged checkpoints · reports/ canonical run reports
-docs/ architecture · tokenization · training · evaluation · decision_log · technical_report ·
-model_cards/ · data_cards/
+docs/ handbook/ (26-part teach-from-zero reference) · architecture · configuration ·
+extending · tokenization · training · evaluation · decision_log · technical_report ·
+deployment · model_cards/ · data_cards/
 tests/ unit + artifact-validator tests
 
 ## Status (Jul 2026)
 
-**The science is done; remaining work is documentation/release + queued v1.1 science.**
-- **OOT headline (M5):** head trained on Dec-2016…2021 observations, tested on Dec-2022/2023
-  (defaults 2023–24, never seen): **FM full 0.8257 ROC / 0.0113 AP beats XGB 0.7913 / 0.0057**
-  (ROC +0.034, AP +98%). Ladder: frozen 0.7309 < LoRA 0.8068 < full 0.8257. Benign window
-  (no regime shift): features win narrowly, as expected.
+**The science is done and v1.1 (G1–G6) is fully merged; remaining work is release polish.**
+- **OOT headline (E11, 100M/10%):** head trained on Dec-2016…2021 observations, tested on
+  Dec-2022/2023 (defaults 2023–24, never seen): **FM 100M full 0.8468 ROC / 0.0175 AP beats
+  XGB 0.7913 / 0.0057** (ROC +0.056, AP 3.1×). Scaling story: 26M full 0.8257 · 65M params-only
+  FLAT 0.8223 · 26M-on-10% (data-only) 0.8406 → data is the dominant lever (DL-015). Mode
+  ladder at 26M: frozen 0.7309 < LoRA 0.8068 < full 0.8257. Crisis stress (2000-06→2008-10):
+  FM 0.7819/0.0248 vs XGB 0.757/0.024. Prepay (honest negative): 0.6259 — macro-rate-driven.
+  Benign window (no regime shift): features win narrowly, as expected.
 - **Pipeline validated end-to-end** (ingest + split so far): unit tests + artifact validators
   (`validate_ingest`, `validate_splits`), incl. negative controls. 4% sample proven
   REPRESENTATIVE vs the 100% book (pooled default 0.671% vs 0.648%).
-- **Open:** score_portfolio (#6), sample outputs (#9), research paper (#14), tech-report final
-  review (#17), HF weights publish (deferred), packaging (v1.1 G5), calibration+serving (G6).
+- **v1.1 complete:** G1 dataset contract+adapters · G2 declarative labels · G3 streaming data
+  path · G4 resume/DDP/logger · G5 packaging (1.1.0.dev0, lean deps, CI wheel job) + docs ·
+  G6 calibration (score→PD, embargo-guarded) + FastAPI serving example.
+- **Open:** research paper (#14), tech-report human read-through (#17), HF weights publish
+  (deferred), model/data-card pass, optional 100%-corpus run (G3 enables it).
   **v1.1 science queued:** multi-objective pretraining (next-period heads), numeric
   value-embeddings, macro context — see internal PLAN.md.
 - **Scale-out data path (v1.1 G3):** ingest is sharded + resumable (one `part-<quarter>.parquet`
@@ -69,7 +78,7 @@ tests/ unit + artifact-validator tests
 
 ## Data (none committed — all gitignored)
 - **Mortgage reference:** GCS `gs://sriram-credit-fm-data` — raw Hive-partitioned source →
-  `scripts/ingest_fannie_mae.py -c configs/fannie_mae/ingest_2000_2024.yaml` writes the panel
+  `scripts/ingest.py -c configs/fannie_mae/ingest_2000_2024.yaml` writes the sharded panel
   with derived `origination_date`, `reporting_date`, `default_event` (D180 or Zero-Balance
   credit event), `prepay_event`, `is_performing`. Auth via `GOOGLE_APPLICATION_CREDENTIALS`
   (`/workspace/.gcloud/credit-fm-sa.json`) + `gcsfs` — note: the container's Arrow build has

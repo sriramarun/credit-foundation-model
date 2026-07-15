@@ -11,8 +11,8 @@ column-by-column reference.
 
 | Step | Command | Output |
 |------|---------|--------|
-| Ingest | `python scripts/ingest_fannie_mae.py -c configs/fannie_mae/ingest_2000_2024.yaml` | per-loan monthly panel (labels derived, 4% loan-hash sample) |
-| Validate | `python scripts/validate_ingest.py --panel <out>/panel_2000_2024.parquet` | PASS/FAIL audit |
+| Ingest | `python scripts/ingest.py -c configs/fannie_mae/ingest_2000_2024.yaml` | one `part-<quarter>.parquet` per source (sharded + resumable — rerun skips finished quarters) |
+| Validate | `python scripts/validate_ingest.py --panel <out>/panel_2000_2024/part-2016Q1.parquet` | PASS/FAIL audit (any shard) |
 | Split | `python scripts/prepare_data.py -c configs/fannie_mae/prepare.yaml --run_name run_2000_2024 --reporting_max 2022-12-31` | `{train,val,test}.parquet` + `splits.{csv,meta.json}` |
 | Validate | `python scripts/validate_splits.py --dir <out_dir>` | PASS/FAIL audit |
 | Tokenizer fit | `python scripts/train_tokenizer.py -c configs/fannie_mae/tokenizer_fit.yaml` | `tokenizer.json` (552-token frozen vocab) + QA report |
@@ -39,7 +39,8 @@ with **loan-disjoint** and **embargo** guards.
 | Experiment | Window | Result |
 |---|---|---|
 | XGBoost bar | train 2016–2021 → test 2022–2023 | ROC 0.7913 / AP 0.0057 |
-| **FM full fine-tune** | identical window | **ROC 0.8257 / AP 0.0113** |
+| FM 26M full fine-tune (4% corpus) | identical window | ROC 0.8257 / AP 0.0113 |
+| **FM 100M full fine-tune (10% corpus)** | identical window | **ROC 0.8468 / AP 0.0175** |
 | Crisis stress (baseline) | train 2000–2006 → test 2008–2010 | ROC 0.757 / AP 0.024 |
 
 Long runs: detach with `nohup … > logs/run.log 2>&1 &` and `tail -f` the log.

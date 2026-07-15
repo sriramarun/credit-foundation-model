@@ -19,10 +19,13 @@ Fine-tuned on observation snapshots from 2016–2021 and tested on **2022/2023 s
 | Model | ROC-AUC | PR-AUC (AP) |
 |---|--:|--:|
 | XGBoost baseline (57 no-leakage features, identical window) | 0.7913 | 0.0057 |
-| **Credit FM (full fine-tune)** | **0.8257** | **0.0113** |
+| Credit FM 26M (full fine-tune, 4% corpus) | 0.8257 | 0.0113 |
+| **Credit FM 100M (full fine-tune, 10% corpus)** | **0.8468** | **0.0175** |
 
-Both metrics beat the baseline — ROC +0.034, **AP +98%** — on real, rare-event data
-(~0.13% default rate). See [`docs/technical_report.md`](docs/technical_report.md).
+Both metrics beat the baseline decisively — ROC +0.056, **AP 3.1×** — on real, rare-event data
+(~0.14% default rate). The 26M→100M step is a measured scaling result: parameters alone did
+nothing (65M on unchanged data was flat); data + parameters together paid. See
+[`docs/technical_report.md`](docs/technical_report.md).
 
 ## Approach
 
@@ -33,6 +36,10 @@ the engineering baseline.
 
 The framework is **schema-agnostic and config-driven**: adapt to a new asset class by writing
 YAML recipes, then running the same scripts — no code changes.
+
+**New to foundation models (or to credit data)?** Start with the
+[Handbook](docs/handbook/00_README.md) — a self-study reference that teaches the whole system
+from zero, one traced loan at a time.
 
 ## Bring your own dataset
 
@@ -64,7 +71,8 @@ monthly events ─▶ Event Encoder (5L) ───┘
   types); vocabulary and bins fit on the train split only.
 - **Downstream**: frozen `[USR]` embeddings + XGBoost, or a classification head fine-tuned
   frozen / LoRA / full — interchangeable heads on the same backbone.
-- ~26M parameters at dim 384 (Chinchilla-honest for the current corpus); RoPE, RMSNorm, SwiGLU.
+- Two reference sizes: 26M @ dim 384 and 100M @ dim 768 (Chinchilla-honest for their corpora);
+  RoPE, RMSNorm, SwiGLU; FlashAttention (SDPA); 8-GPU DDP with checkpoint/resume.
 
 ## Data
 
@@ -88,7 +96,7 @@ Start with the data bible: [`notebooks/00_data_bible.ipynb`](notebooks/00_data_b
 | Recipes | `configs/fannie_mae/`, `configs/dutch_mortgages/` | YAML per asset class; stage recipes + generated schemas |
 | Notebooks | `notebooks/` | `00_data_bible` … `05_new_dataset` (builder-generated) |
 | Reference implementations | `reference_implementations/` | per-asset adapters + runbooks |
-| Docs | `docs/` | architecture · configuration · extending · tokenization · training · evaluation · decision log · cards |
+| Docs | `docs/` | **handbook/** (teach-from-zero reference) · architecture · configuration · extending · tokenization · training · evaluation · decision log · cards |
 
 ## Differentiation
 

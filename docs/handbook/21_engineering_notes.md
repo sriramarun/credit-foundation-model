@@ -50,9 +50,9 @@ great for electricity demand. Credit panels are mostly **categorical, missing-ri
 event-like** (channel codes, purpose flags, NA-heavy servicing fields). Forcing them into
 numeric channels means one-hot blowups and imputation fictions; and neither architecture comes
 with a natural fill-in-the-blanks pretraining objective over categorical structure. Our KVT
-tokens handle category/number/missing uniformly and make MLM possible. (This is also the core
-of our critique of the competitor spec that bundled LSTM/TFT/PatchTST — see the technical
-report's related-work notes.)
+tokens handle category/number/missing uniformly and make MLM possible. (The same argument
+applies to any framework reaching for an LSTM/TFT/PatchTST zoo on credit panels: the data
+type is fighting the architecture.)
 
 ## Why not TabNet (or other deep-tabular nets)?
 

@@ -106,8 +106,7 @@ scores ──validate_scores──▶ the right population, honest metrics, hone
 ```
 
 Break any link and every downstream number is decoration. This chain is why the repo can claim
-its 0.8468 with a straight face — and it's what most ML projects (including the competitor spec
-we reviewed) skip.
+its 0.8468 with a straight face — and it's the part most ML projects skip.
 
 ### Things to remember
 

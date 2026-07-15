@@ -35,3 +35,4 @@ venv/
 .vscode/
 logs/
 runs/
+/runs_*.log
