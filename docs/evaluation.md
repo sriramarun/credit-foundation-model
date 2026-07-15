@@ -42,11 +42,15 @@ combined (PCA-compressed) · linear probe · fine-tuned head (frozen / LoRA / fu
 | Model | ROC-AUC | AP |
 |---|--:|--:|
 | XGBoost baseline | 0.7913 | 0.0057 |
-| FM frozen head | 0.7309 | 0.0052 |
-| FM LoRA | 0.8068 | 0.0087 |
-| **FM full fine-tune** | **0.8257** | **0.0113** |
+| FM 26M frozen head | 0.7309 | 0.0052 |
+| FM 26M LoRA | 0.8068 | 0.0087 |
+| FM 26M full fine-tune | 0.8257 | 0.0113 |
+| FM 65M full (params only ↑, 4% corpus) | 0.8223 | — |
+| FM 26M full (data only ↑, 10% corpus) | 0.8406 | 0.0145 |
+| **FM 100M full (10% corpus — headline)** | **0.8468** | **0.0175** |
 
 Frozen embeddings alone don't beat strong tabular features — adaptation unlocks the win
-(full > LoRA > frozen). On a benign in-distribution window (no regime shift) the tabular
+(full > LoRA > frozen), and scale pays only when data grows with the model (65M flat; 100M+10%
+is the headline — the scaling decomposition is §7.4 of the technical report). On a benign in-distribution window (no regime shift) the tabular
 baseline wins narrowly, as expected; the FM's edge appears exactly where it should — crossing
 into unseen years. Full detail: `technical_report.md`.

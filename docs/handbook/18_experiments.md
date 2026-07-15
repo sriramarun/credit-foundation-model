@@ -1,7 +1,7 @@
 # Part 18 — Experiments: Recording, Reproducibility, Registry
 
-> The E-numbers you'll see in reports (E8, E10, E11…) come from the internal experiment ledger;
-> the *public* record is reports/ + each artifact's embedded lineage.
+> The E-numbers you'll see in reports (E8, E10, E11…) index the project's experiment ledger;
+> the durable record is `reports/` + each artifact's embedded lineage.
 
 ## 18.1 The recording philosophy: artifacts are the record
 
@@ -62,7 +62,7 @@ timing, DDP reduction order. Hence the honest claim format used in this repo: *"
 Seeds are set everywhere (`set_seed(cfg.seed)`, per-rank offsets under DDP) to narrow the noise,
 not to deny it.
 
-**The reproduction protocol** (what the 10%-rerun script encodes): fresh `_rr` paths for every
+**The reproduction protocol** (how a rerun of the headline experiment is done): fresh `_rr` paths for every
 artifact, same recipe/seed/effective batch, per-stage validators must pass, judge the endpoint as
 a band. Any framework change in between is regression-tested *by* the rerun.
 
