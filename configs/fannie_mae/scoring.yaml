@@ -21,6 +21,8 @@ gate: true                                        # keep only loans performing a
 gate_col: is_performing                           # null (or gate: false) scores every loan
 out: ${paths.runs}/portfolio_scores.parquet       # writes scores + a <out>_manifest.json sidecar
 
+calibrator: null                                   # calibrator.json from calibrate.py (G6.1);
+                                                   # adds a calibrated `pd` column (ranks unchanged)
 limit: 0                                           # 0 = all loans; >0 = first N (smoke test)
 batch_size: 256
 workers: 0

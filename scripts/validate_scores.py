@@ -18,6 +18,11 @@ Two layers, mirroring the pipeline convention:
   cutoff) and report ROC-AUC / PR-AUC **plus a recall@K / lift table** ("review the top K% riskiest,
   catch what share of defaults?" — the operational metric). Check G = scored ⊆ panel; H (with
   ``--min-roc``) gates the ROC. Only meaningful for a **past** cutoff whose outcomes exist.
+* **Calibration** (check I, v1.1 G6.1) — when the file carries a calibrated ``pd`` column
+  (``score_portfolio --calibrator``): structurally, ``pd`` must be in [0,1]; with a labeled
+  panel, the **Brier score** and reliability table are reported and calibration-in-the-large is
+  gated — mean predicted PD within ``--cal-factor``× (default 2) of the realized rate. Raw
+  rebalanced-model scores fail this by an order of magnitude; that is the point.
 
     python scripts/validate_scores.py --scores gs://.../portfolio_scores.parquet
     # + quality: reproduce the model's ~0.82 on a labeled past cutoff
@@ -67,6 +72,8 @@ def main() -> int:
     ap.add_argument("--min-roc", type=float, help="if set, PASS/FAIL on ROC-AUC >= this")
     ap.add_argument("--top-k", type=float, nargs="+", default=[0.01, 0.05, 0.10, 0.20],
                     help="review-budget fractions for the recall@K / lift table (e.g. 0.01 0.05)")
+    ap.add_argument("--cal-factor", type=float, default=2.0,
+                    help="check I tolerance: mean pd within this factor of the realized rate")
     args = ap.parse_args()
     if args.scores.startswith("gs://") and Path(args.key).exists():
         os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", args.key)
@@ -106,6 +113,12 @@ def main() -> int:
         # E) single cutoff
         cuts = df["cutoff"].astype(str).unique()
         chk("E: single cutoff value", len(cuts) == 1, f"cutoffs = {list(cuts)[:3]}")
+        # I-structural) calibrated pd column, when present, must be a probability
+        if "pd" in df.columns:
+            p = pd.to_numeric(df["pd"], errors="coerce")
+            chk("I: calibrated pd in [0,1], no NaN",
+                bool(p.notna().all() and (p >= 0).all() and (p <= 1).all()),
+                f"pd range {p.min():.5f}..{p.max():.5f}, mean {p.mean():.5f}")
 
     # F) manifest agreement
     if manifest is not None:
@@ -166,6 +179,19 @@ def main() -> int:
                       f"lift {(caught/n)/base:4.1f}x")
             if args.min_roc is not None:
                 chk(f"H: ROC-AUC >= {args.min_roc}", roc >= args.min_roc, f"ROC={roc:.4f}")
+            # I-quality) calibration: Brier + reliability + calibration-in-the-large (G6.1)
+            if "pd" in df.columns:
+                from credit_fm.inference.calibration import brier, reliability_table
+                p = df["pd"].to_numpy()
+                print(f"  calibration: Brier={brier(y, p):.6f}  (raw-score Brier={brier(y, sc):.6f})"
+                      f"  mean_pd={p.mean():.5f}  realized={y.mean():.5f}")
+                for row in reliability_table(y, p):
+                    print(f"    {row['bin']}  n={row['n']:>8,}  mean_pd={row['mean_pd']:.4f}  "
+                          f"realized={row['realized']:.4f}")
+                f = args.cal_factor
+                ratio = p.mean() / max(y.mean(), 1e-12)
+                chk(f"I: calibration-in-the-large (mean pd within {f}x of realized rate)",
+                    (1 / f) <= ratio <= f, f"mean_pd/realized = {ratio:.2f}")
         else:
             chk("H: forward-label eval has both classes", both,
                 f"{int(y.sum())} defaults in {len(y):,} — need a labeled PAST cutoff")
