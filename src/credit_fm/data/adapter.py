@@ -28,7 +28,16 @@ REGISTRY: dict[str, type] = {}
 
 @runtime_checkable
 class DatasetAdapter(Protocol):
-    """One implementation per asset; everything downstream is asset-blind."""
+    """One implementation per asset; everything downstream is asset-blind.
+
+    Optional capability (sharded, resumable ingest — v1.1 G3.1): an adapter MAY also implement
+    ``load_source(source) -> pd.DataFrame`` (one contract-conforming frame per source) and
+    ``source_tag(source) -> str`` (a unique shard tag, e.g. the reporting quarter). When
+    ``load_source`` is present, ``scripts/ingest.py`` writes one shard per source as each
+    completes and skips completed sources on rerun; adapters without it fall back to the
+    whole-panel path. (Kept out of the Protocol body so adapters without the capability still
+    satisfy ``isinstance`` checks.)
+    """
 
     config: DatasetConfig
 

@@ -23,6 +23,7 @@ or directly. ``scripts/validate_ingest.py`` re-derives these columns from the re
 
 from __future__ import annotations
 
+import re
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
@@ -123,8 +124,20 @@ class FannieMaeAdapter:
                              "sources.reporting (e.g. [2016Q1, 2016Q2]).")
         return [_hive_path(root, r) for r in reporting]
 
+    def source_tag(self, source: str) -> str:
+        """Shard tag for the sharded ingest driver (G3.1): the reporting quarter when the source
+        is a hive quarter dir ('…/reporting_year=2016/reporting_quarter=Q1' -> '2016Q1'), else a
+        sanitized basename."""
+        m = re.search(r"reporting_year=(\d{4})/reporting_quarter=Q(\d)", str(source))
+        if m:
+            return f"{m.group(1)}Q{m.group(2)}"
+        base = str(source).rstrip("/").rsplit("/", 1)[-1].removesuffix(".parquet")
+        return re.sub(r"[^A-Za-z0-9_=-]+", "-", base)
+
     # ------------------------------------------------------------------ load
-    def _read_source(self, s: str) -> pd.DataFrame:
+    def load_source(self, s: str) -> pd.DataFrame:
+        """Read ONE source (file or hive quarter dir), derive contract columns, apply the
+        loan-hash sample. Public: the sharded ingest driver (G3.1) calls this per source."""
         df = _derive(storage.read_parquet(s))         # fsspec read: file or hive dir, local/gs://
         if self.sample_pct < 100:                     # deterministic loan-hash sample
             keep = pd.util.hash_pandas_object(df["loan_id"], index=False) % 100 < self.sample_pct
@@ -137,5 +150,5 @@ class FannieMaeAdapter:
         srcs = self.sources()
         print(f"Reading {len(srcs)} source(s) with {self.workers} parallel workers ...", flush=True)
         with ThreadPoolExecutor(max_workers=self.workers) as ex:
-            frames = list(ex.map(self._read_source, srcs))    # order preserved
+            frames = list(ex.map(self.load_source, srcs))     # order preserved
         return pd.concat(frames, ignore_index=True)

@@ -127,6 +127,25 @@ def read_parquet(url: str, columns=None, storage_options: dict[str, Any] | None 
     return retry(_read, what=url)
 
 
+def exists(url: str, storage_options: dict[str, Any] | None = None) -> bool:
+    """True if ``url`` exists (file or directory/prefix) on its backend."""
+    fs, path = _fs(url, storage_options)
+    return bool(fs.exists(path))
+
+
+def isdir(url: str, storage_options: dict[str, Any] | None = None) -> bool:
+    """True if ``url`` is a directory/prefix (e.g. a shard dir) rather than a single file."""
+    fs, path = _fs(url, storage_options)
+    return bool(fs.isdir(path))
+
+
+def read_text(url: str, storage_options: dict[str, Any] | None = None) -> str:
+    """Read a text file from ``url`` (local/gs:///s3://)."""
+    ensure_auth(url)
+    with fsspec.open(url, "r", **(storage_options or {})) as f:
+        return f.read()
+
+
 def write_text(text: str, url: str, storage_options: dict[str, Any] | None = None) -> None:
     """Write a text file to ``url`` (local/gs:///s3://), creating the parent prefix first."""
     ensure_auth(url)
