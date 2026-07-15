@@ -43,3 +43,38 @@ with **loan-disjoint** and **embargo** guards.
 | Crisis stress (baseline) | train 2000–2006 → test 2008–2010 | ROC 0.757 / AP 0.024 |
 
 Long runs: detach with `nohup … > logs/run.log 2>&1 &` and `tail -f` the log.
+
+## Scoring, calibration, and serving (v1.1 G6)
+
+Batch-score a portfolio, calibrate the scores into PDs on a held-out window (never a test
+cutoff — the stage refuses), then score calibrated:
+
+```bash
+python scripts/score_portfolio.py -c configs/fannie_mae/scoring.yaml \
+    --cutoff 2021-12-31 --out $RUNS/calibration_scores.parquet   # calibration window
+python scripts/calibrate.py -c configs/fannie_mae/calibrate.yaml # fits calibrator.json
+python scripts/score_portfolio.py -c configs/fannie_mae/scoring.yaml \
+    --calibrator $RUNS/calibrator.json                           # scores + calibrated `pd` col
+python scripts/validate_scores.py --scores <scores> --labeled-panel <panel>  # incl. Brier (check I)
+```
+
+**Serving example** (`serve.py` — explicitly an example: no auth/TLS/scaling; it reuses
+`credit_fm.inference.scoring`, so an HTTP score equals a batch score):
+
+```bash
+pip install "credit_fm[serving]"
+python reference_implementations/fannie_mae/serve.py \
+    --checkpoint runs/m_100m_ft.pt --calibrator runs/calibrator.json --port 8000
+
+curl -s localhost:8000/score -H 'Content-Type: application/json' -d '{
+  "cutoff": "2023-12-31",
+  "loans": [
+    {"loan_id": "L1", "reporting_date": "2023-11-30", "loan_age": 23, "original_ltv": 80,
+     "channel": "R", "current_upb": 190000, "current_interest_rate": 6.5, "is_performing": true},
+    {"loan_id": "L1", "reporting_date": "2023-12-31", "loan_age": 24, "original_ltv": 80,
+     "channel": "R", "current_upb": 189000, "current_interest_rate": 6.5, "is_performing": true}
+  ]
+}'
+# -> {"cutoff":"2023-12-31","n_scored":1,"calibrated":true,
+#     "scores":[{"loan_id":"L1","score":0.41,"pd":0.0031,"rank":1,...}]}
+```
