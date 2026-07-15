@@ -111,21 +111,57 @@ def write_parquet(df: pd.DataFrame, url: str, storage_options: dict[str, Any] | 
     retry(_write, what=url)
 
 
+def _unify_fragment_schemas(dataset):
+    """Union of all fragments' schemas, promoting ``null``-typed columns to their real type.
+
+    A per-source shard where a column is ENTIRELY missing (e.g. REO/modification fields in
+    year-2000 Fannie quarters) stores that column as arrow ``null``; later shards store strings.
+    A directory scan then fails with ``Unsupported cast from string to null`` because pyarrow
+    adopts the first fragment's schema. This builds the union: first non-null type wins per
+    column, so all-null columns are read as their real dtype (values stay NA).
+    """
+    import pyarrow as pa
+    fields: dict[str, Any] = {}
+    order: list[str] = []
+    for frag in dataset.get_fragments():
+        for f in frag.physical_schema:
+            if f.name not in fields:
+                fields[f.name] = f
+                order.append(f.name)
+            elif pa.types.is_null(fields[f.name].type) and not pa.types.is_null(f.type):
+                fields[f.name] = f
+    return pa.schema([fields[n] for n in order])
+
+
+def _dataset_table(path: str, filesystem, columns) -> pd.DataFrame:
+    """Scan a parquet file/dir as a dataset; on a shard-schema clash, retry with a unified schema."""
+    import pyarrow as pa
+    import pyarrow.dataset as pds
+    dataset = pds.dataset(path, filesystem=filesystem, format="parquet")
+    try:
+        return dataset.to_table(columns=columns).to_pandas()
+    except (pa.ArrowNotImplementedError, pa.ArrowTypeError, pa.ArrowInvalid):
+        schema = _unify_fragment_schemas(dataset)
+        dataset = pds.dataset(path, filesystem=filesystem, format="parquet", schema=schema)
+        return dataset.to_table(columns=columns).to_pandas()
+
+
 def read_parquet(url: str, columns=None, storage_options: dict[str, Any] | None = None) -> pd.DataFrame:
     """Read parquet — a single file or a partitioned directory — from local/gs:///s3://.
 
     Uses the fsspec filesystem (gcsfs/s3fs) for IO, so it works when pyarrow lacks native cloud
-    support; pyarrow only parses the bytes.
+    support; pyarrow only parses the bytes. Directories of per-source shards may disagree on
+    all-null column types (G3.1 sharded ingest) — handled by :func:`_unify_fragment_schemas`.
     """
     if "://" not in str(url):
-        return pd.read_parquet(url, columns=columns)        # local: plain path, fastest
-    import pyarrow.dataset as pds
+        if os.path.isdir(url):                              # local shard dir: same unified scan
+            return _dataset_table(str(url), None, columns)
+        return pd.read_parquet(url, columns=columns)        # local single file: fastest path
     from pyarrow.fs import FSSpecHandler, PyFileSystem
 
     def _read() -> pd.DataFrame:                             # rebuild fs+dataset each try (fresh creds)
         fs, path = _fs(url, storage_options)
-        dataset = pds.dataset(path, filesystem=PyFileSystem(FSSpecHandler(fs)), format="parquet")
-        return dataset.to_table(columns=columns).to_pandas()
+        return _dataset_table(path, PyFileSystem(FSSpecHandler(fs)), columns)
 
     return retry(_read, what=url)
 
