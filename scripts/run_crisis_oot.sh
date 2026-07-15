@@ -19,7 +19,7 @@ cd /workspace/credit-foundation-model
 LOG="runs_crisis_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "$LOG") 2>&1
 
-ROOT="gs://sriram-credit-fm-data"
+ROOT="${CREDIT_FM_BUCKET:-gs://sriram-credit-fm-data}"   # override: export CREDIT_FM_BUCKET=gs://<yours>
 PANEL="$ROOT/output/raw/fannie_mae/panel_2000_2024.parquet"
 PROC="$ROOT/output/processed/fannie_mae/run_2000_2007"
 ENC="$ROOT/output/encoded/fannie_mae/run_2000_2007"

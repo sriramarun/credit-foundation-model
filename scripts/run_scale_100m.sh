@@ -21,7 +21,7 @@ LOG="runs_scale100m_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "$LOG") 2>&1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True   # (pretrain.py also sets this; belt-and-suspenders)
 
-ROOT="gs://sriram-credit-fm-data"
+ROOT="${CREDIT_FM_BUCKET:-gs://sriram-credit-fm-data}"   # override: export CREDIT_FM_BUCKET=gs://<yours>
 RAW="$ROOT/output/raw/fannie_mae"
 PANEL10="$RAW/panel_2000_2024_10pct.parquet"
 RUN_NAME="run_2000_2022_10pct"

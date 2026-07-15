@@ -19,10 +19,11 @@ cd /workspace/credit-foundation-model
 LOG="runs_65m_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "$LOG") 2>&1                 # mirror all stdout/stderr into the log
 
-RUNS="gs://sriram-credit-fm-data/runs"
+ROOT="${CREDIT_FM_BUCKET:-gs://sriram-credit-fm-data}"   # override: export CREDIT_FM_BUCKET=gs://<yours>
+RUNS="$ROOT/runs"
 CKPT="$RUNS/m5_65m.pt"                       # 65M pretrained checkpoint (produced by stage 2)
 FT="$RUNS/m5_65m_ft.pt"                      # 65M fine-tuned model (produced by stage 3)
-ENCODED="gs://sriram-credit-fm-data/output/encoded/fannie_mae/run_2000_2022"  # must match pretrain_65m.yaml run_name
+ENCODED="$ROOT/output/encoded/fannie_mae/run_2000_2022"  # must match pretrain_65m.yaml run_name
 
 echo "================================================================"
 echo " 65M scale-up experiment — started $(date)"
