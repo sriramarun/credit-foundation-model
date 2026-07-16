@@ -82,8 +82,11 @@ GPU util sawtoothing to 0% → loader-bound: raise `num_workers`, check you're r
 (network) vs local cache. Worker crashes with pickling/deadlock errors → you forked after gRPC
 init; the encode pool uses **spawn** for exactly this — keep it. `pd.read_parquet("gs://…")`
 raising `ArrowNotImplementedError` → this pyarrow build lacks native GCS; always go through
-`storage.read_parquet`. Transient SSL/OAuth failures hours in → `storage.retry` handles known
-markers; a *new* transient marker belongs in `_TRANSIENT_MARKERS`.
+`storage.read_parquet`. `Unsupported cast from string to null` on a shard **directory** →
+per-quarter shards disagree on all-null column types (a field empty in 2000, populated in
+2016); the storage/streaming readers unify fragment schemas automatically (fix #111) — any
+raw pyarrow scan of a shard dir must do the same. Transient SSL/OAuth failures hours in →
+`storage.retry` handles known markers; a *new* transient marker belongs in `_TRANSIENT_MARKERS`.
 
 ## 22.7 Corrupt tokenizer / checkpoint-shape mismatches
 

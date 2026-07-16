@@ -85,8 +85,9 @@ grep -q '/workspace/.venv/bin/activate' ~/.bashrc || \
 For recreate-proofing, also add the same guarded line to the compose `command` before
 `tail -f /dev/null`.
 
-### 4. Secrets (keep out of git; survive via the volume)
+### 4. Secrets + storage env (keep out of git; survive via the volume)
 
+```bash
 cat > /workspace/secrets.env <<'EOF'
 export WANDB_API_KEY=...
 export WANDB_PROJECT=credit-foundation-model
@@ -98,6 +99,13 @@ grep -q '/workspace/secrets.env' ~/.bashrc || \
   echo 'source /workspace/secrets.env' >> ~/.bashrc
 source /workspace/secrets.env
 wandb login --verify
+```
+
+Storage environment (v1.1 G5.1; `setup_container.sh` step 5b exports these to `~/.bashrc`):
+`CREDIT_FM_GCS_KEY` points the package at the GCS service-account JSON (defaults to
+`/workspace/.gcloud/credit-fm-sa.json` if unset), and `CREDIT_FM_BUCKET` re-points the
+`run_*.sh` experiment scripts at a different bucket — set both when moving off the reference
+box.
 
 ### 5. Git: identity + credentials (push-ready from the container)
 

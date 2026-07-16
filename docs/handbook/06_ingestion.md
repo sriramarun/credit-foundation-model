@@ -115,6 +115,7 @@ reports in many quarters, so loan counts don't add.
 | `ArrowNotImplementedError` reading `gs://` | Container's pyarrow has no native GCS → always go through `storage.read_parquet` (gcsfs), never `pd.read_parquet("gs://…")` directly |
 | Hangs then dies hours in with SSL/OAuth errors | Transient cloud failures → `storage.retry()` already handles the known markers; if a new marker appears, add it to `_TRANSIENT_MARKERS` |
 | Rerun re-reads a quarter you thought was done | Its sidecar is missing — the previous run died mid-write there. That's the mechanism working, not a bug |
+| Reading the shard DIR dies with `Unsupported cast from string to null` | A column entirely empty in some quarters (REO/modification fields in year-2000 shards) is arrow `null`-typed there and `string` elsewhere → `storage.read_parquet`/`streaming` unify fragment schemas automatically (fix #111); if you scan shard dirs with raw pyarrow, unify first |
 | `source tags collide` | Two sources map to one shard name (e.g. same basename in different dirs) → give the adapter a disambiguating `source_tag` |
 
 **Performance notes:** `workers` is a *thread* pool (I/O-bound reads; pandas releases the GIL
