@@ -244,6 +244,35 @@ Two attribution caveats, stated plainly: (a) the E11-vs-E12 increment bundles th
 work); (b) with ~2,500 test positives the +0.0062 ROC increment is on the order of one standard
 error — suggestive, while the AP increment and the E12 data effect are comfortably larger.
 
+### 7.5 Independent reproduction on the v1.1 framework (16 Jul 2026)
+
+After the v1.1 generalization program (dataset contract + adapters, declarative labels,
+sharded/streaming data path, resumable/DDP trainer, packaging, calibration — nine merged PRs of
+refactoring between the original run and this one), the headline experiment was re-run
+**end-to-end from raw data on entirely fresh artifact paths**: same recipes, same seed, same
+frozen tokenizer, same single-GPU effective-batch-256 regime.
+
+Deterministic stages reproduced **exactly** where comparable: identical loan-hash sample
+population, identical split (train 4,374,414 / val 546,801 / test 546,803 loans; 254.4M train
+rows), 2,997,726,396 encoded training tokens (~3.0B), and an identical evaluation population
+(1,782,453 test observations at a 0.14% positive rate). All stage validators passed. The
+stochastic endpoint (GPU training is reproducible as a distribution, not bitwise):
+
+| | Original (E11) | Reproduction | Δ |
+|---|--:|--:|--:|
+| OOT ROC-AUC | 0.8468 | 0.8447 | −0.0021 |
+| OOT PR-AUC | 0.0175 | 0.0160 | −0.0015 |
+| vs features bar (ROC) | +0.063 | +0.061 | — |
+
+Both deltas fall inside the pre-registered run-to-run band (~±0.003 ROC / ±0.002 AP at ~2,500
+test positives), and every qualitative conclusion is unchanged: the 100M/10% model decisively
+beats the tabular bar and remains clearly above the 26M model (0.8257). The rerun also
+exercised the v1.1 machinery under fire: a kill mid-ingest was resumed with zero recomputation
+(100/100 quarters skipped on restart), and it surfaced — and now regression-tests — one real
+framework bug (per-quarter shard schema disagreement on all-null columns, fixed in `storage`/
+`streaming` schema unification). Artifacts: `m_100m_rr.pt` / `m_100m_rr_ft.pt`,
+`reports/m_100m_rr_oot_ft_full.md`.
+
 ---
 ## 8. Discussion
 
@@ -285,7 +314,7 @@ real credit data and a true future-prediction test rather than an in-period frau
 ## 10. Reproducibility
 Every artifact stores the exact resolved config that produced it. The OOT verdict reproduces via:
 ```bash
-python scripts/ingest_fannie_mae.py   -c configs/fannie_mae/ingest_2000_2024.yaml
+python scripts/ingest.py              -c configs/fannie_mae/ingest_2000_2024.yaml   # sharded+resumable
 python scripts/prepare_data.py        -c configs/fannie_mae/prepare.yaml --run_name run_2000_2022 \
     --input '${paths.raw}/panel_2000_2024.parquet' --reporting_max 2022-12-31
 python scripts/train_tokenizer.py     -c configs/fannie_mae/tokenizer_fit.yaml --run_name run_2000_2022 \
@@ -299,12 +328,14 @@ python scripts/build_oot_baseline.py  --train-years 2016-2021 --test-years 2022-
 ```
 
 The crisis run reproduces via `scripts/run_crisis_oot.sh`; the scaling run (10% ingest → 100M
-pretrain → OOT fine-tune, resume-safe) via `scripts/run_scale_100m.sh`.
+pretrain → OOT fine-tune, resume-safe) via `scripts/run_scale_100m.sh`. This procedure was
+executed independently end-to-end on the v1.1 framework — §7.5 reports the outcome (headline
+reproduced within the run-to-run band).
 
 Artifacts: pretrained checkpoints `runs/m5_full.pt` (25.7M) and `runs/m_100m.pt` /
 `runs/m_100m_ft.pt` (100.9M); tokenizer `configs/fannie_mae/tokenizer.json`; result reports under
-`reports/m5_oot_ft_*.md`, `reports/fannie_oot_2022_2023.md`, `reports/m_100m_oot_ft_full.md`, and
-`reports/m5_on_10pct_ablation.md`.
+`reports/m5_oot_ft_*.md`, `reports/fannie_oot_2022_2023.md`, `reports/m_100m_oot_ft_full.md`,
+`reports/m5_on_10pct_ablation.md`, and the reproduction report `reports/m_100m_rr_oot_ft_full.md`.
 
 ---
 ## 11. Future work
