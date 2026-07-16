@@ -1,6 +1,6 @@
 # Model Card — Credit Foundation Model (Fannie Mae reference, M5)
 
-*finevals.ai · Apache-2.0 · card v1, 4 Jul 2026*
+*finevals.ai · Apache-2.0 · card v2, 16 Jul 2026 (adds the 100M/10% headline model)*
 
 ## Model details
 
@@ -10,7 +10,10 @@
 - **Architecture:** three-branch encoder (Profile / Event / History) with key–value–time (KVT)
   tokenization. RoPE positional encoding, RMSNorm, SwiGLU. `[USR]` token yields a 384-dim
   per-loan summary embedding.
-- **Size:** ~25.7M parameters · hidden dim 384 · 8 heads · 3/5/6 layers (profile/event/history).
+- **Size:** two reference configurations, same architecture and tokenizer:
+  - 26M parameters · dim 384 · 8 heads · 3/5/6 layers — pretrained on the 4% sample;
+  - **100M parameters · dim 768 · 8 heads · 3/5/6 layers — pretrained on the 10% sample
+    (~3B tokens; the current headline model, `m_100m*.pt`).**
 - **Tokenizer:** KVT, 552-token vocabulary (fit on the 2000–2022 train split only), up to 60
   monthly events per loan, `yearquarter` calendar token, quantile bins with anchors at regulatory
   cliffs (LTV 80/90/95/97, DTI 36/43/45).
@@ -79,13 +82,18 @@ Features win narrowly — expected when there is no regime shift to exploit.
 | Model | ROC-AUC | AP (PR-AUC) |
 |---|--:|--:|
 | XGBoost baseline (same window) | 0.7913 | 0.0057 |
-| FM frozen | 0.7309 | 0.0052 |
-| FM LoRA | 0.8068 | 0.0087 |
-| **FM full fine-tune** | **0.8257** | **0.0113** |
+| FM 26M frozen | 0.7309 | 0.0052 |
+| FM 26M LoRA | 0.8068 | 0.0087 |
+| FM 26M full fine-tune | 0.8257 | 0.0113 |
+| FM 65M full (params only ↑) | 0.8223 | — |
+| FM 26M full (data only ↑, 10% corpus) | 0.8406 | 0.0145 |
+| **FM 100M full fine-tune (10% corpus)** | **0.8468** | **0.0175** |
 
-On genuinely unseen future loans the model **beats the baseline on both metrics** — ROC +0.034,
-AP **+98%**. This is the headline result: the behavioural sequence generalises across a shift into
-new years better than a point-in-time snapshot. (Full technical report: `docs/technical_report.md`.)
+On genuinely unseen future loans the model **beats the baseline on both metrics** — ROC +0.056,
+AP **3.1×** at 100M. The 65M/26M-on-10% rows are the measured scaling decomposition: parameters
+alone did nothing; growing data and parameters together produced the headline (DL-015). The
+behavioural sequence generalises across a shift into new years better than a point-in-time
+snapshot. (Full technical report: `docs/technical_report.md`.)
 
 ## Limitations and caveats
 

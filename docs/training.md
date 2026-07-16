@@ -44,9 +44,20 @@ rare-event stabilizers: train-side negative downsampling (`neg_per_pos`), capped
 (`pos_weight_cap`), per-epoch true-balance validation ROC, and best-epoch restore. Test sets
 are never downsampled.
 
-## Current scale
+## Current scale (v1.1)
 
-Single-GPU (H100, bf16) is the working configuration; multi-GPU DDP is deliberately sequenced
-last (throughput refinements — length-bucketed batching, flash-attention — are tracked
-alongside it). Experiment tracking to W&B remains an open decision (DL-009,
-sovereign-cloud/data-residency constraint); runs currently log to stdout + GCS checkpoints.
+Both single-GPU and **8-GPU DDP** (v1.1 G4b) are working configurations — launch with
+`PYTHONPATH=src python -m torch.distributed.run --standalone --nproc_per_node 8
+scripts/pretrain.py -c <recipe>` (never bare `torchrun`; it resolves to system python).
+Effective batch = micro × `schedule.grad_accum` × world size; gradient sync defers to the last
+micro-batch (`no_sync`), and validation/checkpointing/logging are rank-0-only. FlashAttention
+(SDPA) is on by default in `models/base.py`.
+
+Long runs are **resumable** (v1.1 G4a): `checkpoint.every` writes full-state step files
+(model+optimizer+scheduler+RNG, rotated by `keep`); `--resume auto` continues from the newest —
+a crash costs at most one checkpoint interval.
+
+Metrics logging is pluggable (v1.1 G4c, **resolves DL-009**): `logging.backend:
+null | jsonl | tensorboard | wandb`. The default is byte-identical stdout; jsonl is the
+zero-dependency crash-safe workhorse; wandb is strictly opt-in and offline by default —
+nothing phones home unless explicitly configured (the sovereign-cloud constraint, honored).

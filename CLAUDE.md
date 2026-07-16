@@ -10,8 +10,8 @@ since v1.1 G4b: `PYTHONPATH=src python -m torch.distributed.run --standalone --n
 never bare `torchrun`).
 
 **Reference corpus: Fannie Mae Single-Family Loan Performance** (real-world US fixed-rate
-mortgages, 2000–2024, ~3.3B loan-month rows; pretraining uses a validated 4% loan-hash
-sample) — see `docs/data/fannie_mae.md` + `notebooks/00_data_bible.ipynb`. The **Dutch
+mortgages, 2000–2024, ~3.3B loan-month rows; pretraining uses validated 4% / 10% loan-hash
+samples) — see `docs/data/fannie_mae.md` + `notebooks/00_data_bible.ipynb`. The **Dutch
 mortgages** synthetic panel is the controlled **validation/ablation** set (it carries the
 hidden `_segment` ceiling proof).
 
@@ -24,8 +24,9 @@ out-of-time** (see Status).
 
 - **Encoder-only + MLM** (not decoder/causal) — DL-001.
 - **Three-branch encoders**: Profile (static fields) + Event (per-month dynamics) + History
-  (contextualizes the sequence) → `[USR]` per-loan embedding — DL-002. ~26M @ dim 384;
-  RoPE/RMSNorm/SwiGLU; architecture FROZEN since M2.
+  (contextualizes the sequence) → `[USR]` per-loan embedding — DL-002. Reference sizes:
+  26M @ dim 384 and 100M @ dim 768 (the headline); RoPE/RMSNorm/SwiGLU; architecture
+  FROZEN since M2.
 - **Key-value-time tokenization**: fused `field=value` tokens + `t=`/`cal=<YYYYQ#>` time
   coordinates; anchored quantile bins — DL-003/011/012. Frozen vocab `tokenizer.json`
   (552 tokens, full-corpus fit).
@@ -61,8 +62,8 @@ tests/ unit + artifact-validator tests
   ladder at 26M: frozen 0.7309 < LoRA 0.8068 < full 0.8257. Crisis stress (2000-06→2008-10):
   FM 0.7819/0.0248 vs XGB 0.757/0.024. Prepay (honest negative): 0.6259 — macro-rate-driven.
   Benign window (no regime shift): features win narrowly, as expected.
-- **Pipeline validated end-to-end** (ingest + split so far): unit tests + artifact validators
-  (`validate_ingest`, `validate_splits`), incl. negative controls. 4% sample proven
+- **Pipeline validated end-to-end**: unit tests + artifact validators at every stage
+  (`validate_{ingest,splits,dataset,scores}`), incl. negative controls. 4% sample proven
   REPRESENTATIVE vs the 100% book (pooled default 0.671% vs 0.648%).
 - **v1.1 complete:** G1 dataset contract+adapters · G2 declarative labels · G3 streaming data
   path · G4 resume/DDP/logger · G5 packaging (1.1.0.dev0, lean deps, CI wheel job) + docs ·
@@ -89,8 +90,9 @@ tests/ unit + artifact-validator tests
 - **Latents (eval-only):** `data/raw/loan_book.parquet` has `_segment` etc. — **NEVER model
   features**; ceiling validation only.
 - **Splits:** `prepare_data.py -c configs/fannie_mae/prepare.yaml` →
-  `{train,val,test}.parquet + splits.csv + splits.meta.json`; current reference split =
-  `run_2000_2024` (reporting_max 2022-12-31). Always validate with `validate_splits.py`.
+  `{train,val,test}.parquet + splits.csv + splits.meta.json`; reference splits: `run_2000_2024`
+  (4%) and `run_2000_2022_10pct` (10% — the headline lineage), both reporting_max 2022-12-31.
+  Always validate with `validate_splits.py`.
 
 ## Conventions
 - Python 3.10+. **`ruff`** clean + **`pytest`** green before every commit (ruff lints notebooks
@@ -140,3 +142,7 @@ is the planning source of truth.
   the image's pinned numpy/pandas (it broke the venv once; GPU tokenizer engine parked).
 - nullable-boolean labels: `default_event`/`is_performing` are pandas `boolean` (NA from
   unknown delinquency); every consumer must `.fillna(False)`.
+- Per-quarter ingest shards disagree on ALL-NULL columns (arrow `null` type in year-2000
+  quarters vs `string` later) — a naive directory scan dies with "Unsupported cast from string
+  to null". `storage.read_parquet` / `streaming` unify fragment schemas (fix #111); any new
+  parquet-dir reader must go through them.
