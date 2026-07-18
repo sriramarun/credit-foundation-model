@@ -2,7 +2,7 @@ cff-version: 1.2.0
 title: Credit Foundation Model Framework
 message: "If you use this framework, please cite it."
 type: software
-authors: Sriram Krishnan
+authors: "Sriram Krishnan"
   - name: "finevals.ai"
 license: Apache-2.0
 repository-code: "https://github.com/sriramarun/credit-foundation-model"
