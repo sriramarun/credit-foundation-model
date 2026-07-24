@@ -3,7 +3,7 @@
 #
 # Fit the KVT tokenizer on TRAIN + write the token QA report.
 # After generating the schema (classify.yaml --out …), add the documented review layer the
-# same way the Fannie schema does — anchored dpd bins at the business cliffs:
+# same way the source schema does — anchored dpd bins at the business cliffs:
 #
 #   anchors:
 #     dpd: [1, 8, 31, 61, 91]
