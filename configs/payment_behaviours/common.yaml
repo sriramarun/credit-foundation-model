@@ -7,6 +7,7 @@
 
 run_name: run_pb_v1
 data_root: /workspace/data/payment_behaviours
+key: null   # local disk, no GCS auth (ensure_auth no-ops)
 
 dataset: configs/payment_behaviours/dataset.yaml   # the dataset contract (cols/labels/leakage)
 tokenizer: configs/payment_behaviours/tokenizer.json  # KVT vocab (train-only fit, DL-008)
