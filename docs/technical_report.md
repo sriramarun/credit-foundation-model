@@ -245,6 +245,36 @@ work); (b) with ~2,500 test positives the +0.0062 ROC increment is on the order 
 error — suggestive, while the AP increment and the E12 data effect are comfortably larger.
 
 ---
+### 7.5 Independent reproduction on the v1.1 framework
+
+After nine refactoring pull requests to the framework, the headline was re-run end to end from raw
+data on fresh output paths, using the same recipes and seed. The point is not a new number but a
+regression certificate: does the released code still produce the published result?
+
+The **deterministic** stages matched exactly — split loan counts (4,374,414 / 546,801 / 546,803),
+254,407,599 training rows, **2,997,726,396 encoded tokens**, and an identical evaluation population
+of 1,782,453 observations at 0.14%.
+
+| | ROC-AUC | AP |
+|---|--:|--:|
+| Original run (E11) | 0.8468 | 0.0175 |
+| Reproduction (E14) | 0.8447 | 0.0160 |
+| Δ | −0.0021 | −0.0015 |
+
+Both deltas fall inside the pre-registered run-to-run band (±0.003 ROC / ±0.002 AP), so every
+qualitative conclusion is unchanged: the model still beats the features bar by a wide margin and
+still sits clearly above the 26M champion. The run also exercised kill-resume for real (100/100
+quarters skipped on restart) and surfaced one genuine defect — a shard-schema unification bug — now
+fixed and regression-tested.
+
+**Artifact note.** The reproduction checkpoints (`runs/m_100m_rr.pt`, `runs/m_100m_rr_ft.pt`) are
+the ones that can be verified end to end today, and they are what is published. The original E11
+backbone at `runs/m_100m.pt` was **overwritten by a later short run** and its weights no longer
+exist; the fine-tuned E11 artefact (`runs/m_100m_ft.pt`, which carries a full backbone) survives and
+still records 0.8468 / 0.0175 in its embedded metrics. Where a single number must be quoted from a
+checkpoint someone else can re-derive, prefer the reproduction figures.
+
+---
 ## 8. Discussion
 
 **ROC vs AP.** ROC measures ranking across the whole population; AP (average precision / PR-AUC)
@@ -301,8 +331,10 @@ python scripts/build_oot_baseline.py  --train-years 2016-2021 --test-years 2022-
 The crisis run reproduces via `scripts/run_crisis_oot.sh`; the scaling run (10% ingest → 100M
 pretrain → OOT fine-tune, resume-safe) via `scripts/run_scale_100m.sh`.
 
-Artifacts: pretrained checkpoints `runs/m5_full.pt` (25.7M) and `runs/m_100m.pt` /
-`runs/m_100m_ft.pt` (100.9M); tokenizer `configs/mortgage_performance/tokenizer.json`; result reports under
+Artifacts: pretrained checkpoints `runs/m5_full.pt` (25.7M) and `runs/m_100m_rr.pt` /
+`runs/m_100m_rr_ft.pt` (100.9M, the reproducible pair — see §7.5; the earlier `runs/m_100m.pt`
+was overwritten by a later short run and must not be used); tokenizer
+`configs/mortgage_performance/tokenizer.json`; result reports under
 `reports/m5_oot_ft_*.md`, `reports/mortgage_oot_2022_2023.md`, `reports/m_100m_oot_ft_full.md`, and
 `reports/m5_on_10pct_ablation.md`.
 
