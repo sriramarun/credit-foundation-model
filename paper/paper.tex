@@ -105,14 +105,24 @@ We adopt the bidirectional masked-token objective of BERT~\cite{devlin2019bert} 
 causal objective. The task is to \emph{score} a completed history, not to generate one; bidirectional
 context is available at inference and there is no generation surface to hallucinate.
 
-\textbf{Credit-specific sequence models.}
-The closest published line of work to ours is PRAGMA~\cite{pragma2026}, which reports large
-precision-recall gains on credit scoring from an encoder-only, multi-branch architecture with
-parameter-efficient adaptation. We follow its architectural family and confirm its central
-qualitative finding --- that adaptation on top of a pretrained backbone beats task-specific
-training --- on a different corpus and under a stricter temporal protocol. An industrial
-transaction foundation model blueprint~\cite{nvidiatfm} provides our engineering baseline and the
-convention of judging average precision first.
+\textbf{Financial event-sequence foundation models.}
+The closest published work is PRAGMA~\cite{pragma2026}, a family of foundation models for
+multi-source \emph{banking event} sequences (10M--1B parameters). Its design choices are close to
+ours and were arrived at independently for the same reasons: an encoder-only bidirectional backbone
+chosen because the goal is transfer rather than generation, separate encoder branches for profile
+state and events whose outputs are fused by a history encoder, and adaptation by embedding probe or
+LoRA. PRAGMA reports large relative gains on credit scoring ($+130.2\%$ PR-AUC, $+12.4\%$ ROC-AUC
+over a task-specific baseline).
+
+Two differences matter for what a reader can check. First, the substrate: PRAGMA models
+heterogeneous banking events (transactions, product interactions) from a proprietary corpus,
+whereas we model a \emph{loan-performance panel} --- one row per loan per month, static origination
+attributes plus a long monthly sequence --- from a public source. Second, and more consequentially,
+PRAGMA states that it reports \emph{only relative improvements, as absolute metrics are
+commercially sensitive}. We report absolute ROC-AUC and average precision against a disclosed
+baseline on public data, with the code released, so every number here can be re-derived rather than
+taken on trust. An industrial transaction foundation model blueprint~\cite{nvidiatfm} provides our
+engineering baseline and the convention of judging average precision first.
 
 \textbf{Scaling laws.}
 Compute-optimal scaling~\cite{hoffmann2022chinchilla} predicts that model size and data must grow
@@ -394,10 +404,10 @@ J.~Hoffmann et al.
 \newblock \emph{arXiv:2203.15556}, 2022.
 
 \bibitem{pragma2026}
-Ostroukhov et al.
-\newblock PRAGMA: encoder-only multi-branch pretraining for credit scoring.
-\newblock \emph{arXiv:2604.08649}, 2026.
-\newblock \textsc{[VERIFY this reference before submission.]}
+M.~Ostroukhov, R.~Mikhailov, V.~Iashin, A.~Sokolov, A.~Akshonov, V.~Protasov, D.~Beloborodov,
+V.~Mullin, R.~Y. Enzmann, G.~Kolovos, J.~Renders, P.~Nesterov, and A.~Repushko.
+\newblock PRAGMA: Revolut Foundation Model.
+\newblock \emph{arXiv:2604.08649}, 2026. Revolut Research and NVIDIA.
 
 \bibitem{nvidiatfm}
 NVIDIA AI Blueprints.
