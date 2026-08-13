@@ -1,11 +1,11 @@
 % SPDX-License-Identifier: Apache-2.0
 % Copyright (c) 2026 finevals.ai and contributors.
 %
-% Credit Foundation Models: workshop paper (8 pages + references).
-% Venue template not yet chosen -- this uses a neutral single-column article preamble.
-% To target a specific workshop, swap the documentclass/preamble; the body should port unchanged.
+% Credit Foundation Models -- paper draft.
+% Neutral single-column article preamble; the body ports unchanged if a specific
+% template is adopted later.
 %
-% Build:  pdflatex paper.tex && bibtex paper && pdflatex paper.tex && pdflatex paper.tex
+% Build:  tectonic paper.tex      (or: pdflatex paper.tex, run twice for references)
 \documentclass[10pt,letterpaper]{article}
 \usepackage[margin=1in]{geometry}
 \usepackage{booktabs}
@@ -21,7 +21,9 @@ A Sequence Foundation Model for Credit Risk,\\
 Evaluated Out-of-Time}}
 
 \author{%
-  Anonymous / finevals.ai\thanks{Author list and affiliations to be completed before submission.}
+  Sriram Krishnan \\
+  \normalsize finevals.ai \\
+  \normalsize \texttt{sriram.arun@gmail.com}
 }
 \date{}
 
@@ -210,7 +212,8 @@ convention:
 \begin{itemize}
   \item Splits are by \emph{loan}, never by row, and ordered temporally by origination.
   \item Outcome and contemporaneous-state columns (current delinquency, zero-balance code,
-        foreclosure/disposition, loss amounts) are excluded from features for \emph{both} the
+        foreclosure and disposition dates, loss amounts) are excluded from features for
+        \emph{both} the
         foundation model and the baseline; the baseline additionally gates to loans performing at
         the observation date.
   \item Tokenizer vocabulary and bin edges are fit on the training split only.
@@ -387,6 +390,7 @@ runnable pipeline are released under Apache~2.0. Every headline number in this p
 a committed configuration and a generated report file. Section~\ref{sec:repro} documents an
 independent end-to-end re-run of the headline result on a refactored codebase.
 
+\sloppy
 \begin{thebibliography}{9}
 \bibitem{devlin2019bert}
 J.~Devlin, M.-W. Chang, K.~Lee, and K.~Toutanova.
