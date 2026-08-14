@@ -11,27 +11,42 @@ tags:
   - finance
 ---
 
-# Credit Foundation Model — 100M pretrained backbone
+# Credit Foundation Model — 100M backbone + 12-month default model
 
-*by [finevals.ai](https://finevals.ai) · Apache-2.0 · card v1, 12 Aug 2026*
+*by [finevals.ai](https://finevals.ai) · Apache-2.0 · card v2, 14 Aug 2026*
 
 A **sequence foundation model for credit risk**: an encoder-only transformer pretrained with a
 masked-token objective over the full month-by-month repayment history of mortgage loans. It reads a
 loan's history the way a language model reads a sentence, and emits a single vector summarising the
 borrower's trajectory.
 
-> **This repository contains the pretrained backbone only.** It has **no task head** and predicts
-> nothing out of the box. It produces per-loan embeddings; you fine-tune it (or probe it) for a task.
+> **Two artifacts.** The repository root holds the **pretrained backbone** (embeddings, no task
+> head). `finetuned-default-12m/` holds a **fine-tuned 12-month default model** built on it, so the
+> repo can predict as well as embed. Neither takes raw text — see *Usage* for the input format.
 
 ## What is in this repository
 
 | File | Purpose |
 |---|---|
-| `model.safetensors` | Weights — **100,850,474 parameters**, dim 768 |
-| `config.json` | Architecture + the reproducible training recipe |
+| `model.safetensors` | **Backbone** weights — 100,850,474 parameters, dim 768 |
+| `config.json` | Architecture + the reproducible pretraining recipe |
 | `tokenizer.json` | Frozen 552-token key-value-time vocabulary — **required** to encode inputs |
-| `load_example.py` | Minimal snippet: rebuild the model, load weights, embed a loan |
+| `finetuned-default-12m/model.safetensors` | **Fine-tuned** 12-month default model (full fine-tune of the backbone above) |
+| `finetuned-default-12m/config.json` | Same architecture, plus the task definition and its measured out-of-time result |
+| `load_example.py` | Runnable: loads both artifacts, documents the input format, embeds and scores |
 | `LICENSE` | Apache-2.0 |
+
+### The fine-tuned head
+
+`finetuned-default-12m/` predicts **`default_12m`** — whether a loan that is *performing* at an
+observation date defaults within the next 12 months (`gate_col: is_performing`,
+`horizon_months: 12`). It was trained on 2016–2021 snapshots and measured on 2022/2023 snapshots
+whose outcomes fall in 2023–2024: **ROC-AUC 0.8447, AP 0.0160** on 1,782,453 loans.
+
+Its outputs are **ranking scores, not calibrated probabilities**. The fit set was
+negative-downsampled (20 negatives per positive) with a capped class weight, so the absolute level
+is inflated by construction. Map scores to PD with the framework's calibration stage, fitted on a
+window that does not touch your evaluation period.
 
 ## Model details
 
@@ -142,12 +157,30 @@ frozen probe, LoRA, or full fine-tuning.
 
 ## Usage
 
-The three-branch architecture is custom, so this is not an `AutoModel`. Install the framework, then
-load the weights:
+The three-branch architecture is custom, so this is not an `AutoModel`. Install the framework:
 
 ```bash
 pip install "credit_fm @ git+https://github.com/Algoritmica-ai/deeploans.git#subdirectory=credit-foundation-model"
 ```
+
+### The input format
+
+The model takes an **already-tokenized loan panel** — not text, not a feature row — as a dict of
+five positionally aligned tensors. Entry *i* of each tensor describes the same token:
+
+| Key | Shape | Meaning |
+|---|---|---|
+| `input_ids` | `(loans, tokens)` | token id from `tokenizer.json` (a fused `field=value` token) |
+| `field_type` | `(loans, tokens)` | which field the token belongs to — lets the model tell a rate from a balance |
+| `branch` | `(loans, tokens)` | `0` = profile token (static, set at origination), `1` = event token (monthly) |
+| `event_index` | `(loans, tokens)` | which month the token belongs to, 0-based; `-1` for profile tokens |
+| `n_events` | `(loans,)` | how many monthly events each loan actually has |
+
+In production these come from the framework's encoding pipeline (`scripts/encode_dataset.py`),
+which turns a raw loan panel into exactly this. `load_example.py` builds a synthetic batch of the
+same shape so you can verify the weights load and run before wiring up real data.
+
+### Embeddings, and a default score
 
 ```python
 import json, torch
@@ -156,16 +189,28 @@ from credit_fm.models import CreditFoundationModel
 
 cfg = json.load(open("config.json"))
 model = CreditFoundationModel(
-    vocab_size=cfg["vocab_size"], n_field_types=cfg["n_field_types"], dim=cfg["dim"],
-    n_heads=cfg["n_heads"], profile_layers=cfg["profile_layers"],
-    event_layers=cfg["event_layers"], history_layers=cfg["history_layers"],
-)
-model.load_state_dict(load_file("model.safetensors"))
-model.eval()   # -> per-loan [USR] embeddings; attach a head to predict
+    cfg["vocab_size"], cfg["n_field_types"], dim=cfg["dim"], n_heads=cfg["n_heads"],
+    profile_layers=cfg["profile_layers"], event_layers=cfg["event_layers"],
+    history_layers=cfg["history_layers"])
+model.load_state_dict(load_file("model.safetensors"), strict=True)
+model.eval()
+
+out = model(batch)                       # batch as described above
+out["loan_embedding"]                    # (loans, 768) -- one vector per loan history
+
+# the fine-tuned model is loaded the same way from finetuned-default-12m/
+score = torch.softmax(head.classify(batch), dim=-1)[:, 1]   # 12-month default score
 ```
 
-See `load_example.py` for a runnable version, and the framework's handbook for the encoding path
-that turns a raw loan panel into model inputs.
+Run `python load_example.py` for a complete, executable version of both paths.
+
+### Inference on the Hub
+
+There is **no serverless Inference API** for this model: it is a custom architecture
+(`library_name: credit_fm`), not one of the Hub-supported libraries, and its input is a tokenized
+panel rather than text. To serve it, either add a custom `handler.py` and use Inference Endpoints,
+or run it inside a Space that bundles the framework and its encoding pipeline. Local use — download
+the repo and run the snippet above — needs nothing extra.
 
 ## Citation
 
